@@ -36,6 +36,43 @@ export function isDetraining(daysSince: number | null): boolean {
   return daysSince !== null && daysSince >= 14;
 }
 
+export interface MuscleGroupRecency {
+  muscle_group: string;
+  days_since: number;
+  last_trained_on: string; // yyyy-mm-dd
+}
+
+/**
+ * Per-muscle-group recency for adaptive readjustment (feature brief Risk #1).
+ * Overlap is computed here, NOT inferred by the model (ADR-0004): given recent
+ * sessions each carrying the union of muscle groups trained that day, return the
+ * days since each group was last worked, soonest-trained first.
+ *
+ * Sessions may arrive unsorted; the most recent date per group wins. Groups never
+ * trained in the window simply don't appear.
+ */
+export function muscleGroupRecency(
+  sessions: { date: string; muscle_groups: string[] }[],
+  today: Date,
+): MuscleGroupRecency[] {
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const latest = new Map<string, string>(); // muscle group -> most recent ISO date
+  for (const s of sessions) {
+    for (const g of s.muscle_groups) {
+      const cur = latest.get(g);
+      if (!cur || s.date > cur) latest.set(g, s.date); // ISO dates compare lexicographically
+    }
+  }
+  return [...latest.entries()]
+    .map(([muscle_group, date]) => ({
+      muscle_group,
+      last_trained_on: date,
+      // Math.round absorbs DST hour shifts, matching daysSinceLastWorkout.
+      days_since: Math.round((todayMid.getTime() - atLocalMidnight(date).getTime()) / 86_400_000),
+    }))
+    .sort((a, b) => a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group));
+}
+
 export interface RemainingExercise {
   planned: PlannedExercise;
   setsDone: number;

@@ -44,3 +44,8 @@ export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export const ParseRequestSchema = z.object({
   text: z.string().trim().min(1).max(1000),
 });
+
+/** PUT /api/equipment-profiles — set the active profile by id (adaptive readjustment, Risk #4). */
+export const SetActiveProfileSchema = z.object({
+  id: z.uuid(),
+});

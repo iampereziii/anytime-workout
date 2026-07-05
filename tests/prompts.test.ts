@@ -24,6 +24,8 @@ const base: FactsBlockInput = {
   pr_bests: [],
   next_pr_targets: [],
   history_summary: "",
+  muscle_recency: [],
+  equipment: null,
 };
 
 describe("buildFactsBlock (rule 4 — every number is computed, none inferred)", () => {
@@ -95,6 +97,59 @@ describe("buildFactsBlock (rule 4 — every number is computed, none inferred)",
       ],
     });
     expect(block).toContain("max (AMRAP)");
+  });
+
+  it("renders computed per-muscle-group recency (adaptive readjustment)", () => {
+    const block = buildFactsBlock({
+      ...base,
+      muscle_recency: [
+        { muscle_group: "chest", days_since: 2 },
+        { muscle_group: "quads", days_since: 0 },
+      ],
+    });
+    expect(block).toContain("Recently trained (by muscle group");
+    expect(block).toContain("chest: 2 days ago");
+    expect(block).toContain("quads: today");
+  });
+
+  it("omits the recency section entirely when there is none", () => {
+    const block = buildFactsBlock(base);
+    expect(block).not.toContain("Recently trained (by muscle group");
+  });
+
+  it("lists the active equipment profile and its items", () => {
+    const block = buildFactsBlock({
+      ...base,
+      equipment: { name: "Home", items: ["barbell", "dumbbells", "pull-up bar", "plates"] },
+    });
+    expect(block).toContain('Available equipment (active profile "Home"): barbell, dumbbells, pull-up bar, plates');
+  });
+
+  it("renders an empty equipment profile as bodyweight only", () => {
+    const block = buildFactsBlock({ ...base, equipment: { name: "Hotel", items: [] } });
+    expect(block).toContain('Available equipment (active profile "Hotel"): bodyweight only');
+  });
+});
+
+describe("chatSystemPrompt (adaptive readjustment rules)", () => {
+  const block = buildFactsBlock(base);
+
+  it("frames the program as a baseline, not a contract", () => {
+    expect(chatSystemPrompt(block)).toContain("BASELINE, not a contract");
+  });
+
+  it("carries the guardrail: follow the plan when nothing triggers adaptation", () => {
+    expect(chatSystemPrompt(block)).toContain("GUARDRAIL");
+  });
+
+  it("states the per-side barbell / per-hand dumbbell weight convention", () => {
+    const p = chatSystemPrompt(block);
+    expect(p).toContain("PER SIDE");
+    expect(p).toContain("PER HAND");
+  });
+
+  it("lets an in-question location override the active profile", () => {
+    expect(chatSystemPrompt(block)).toContain("overrides the active profile");
   });
 });
 

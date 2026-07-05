@@ -9,6 +9,8 @@ export interface Exercise {
   aliases: string[];
   is_bodyweight: boolean;
   unit: ExerciseUnit;
+  /** Muscle groups worked (primary + secondary); empty = cardio/none. Feeds per-group recency. */
+  muscle_groups: string[];
   created_at: string;
 }
 

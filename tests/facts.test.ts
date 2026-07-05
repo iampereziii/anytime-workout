@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { daysSinceLastWorkout, isDetraining, nextPrTargets, remainingToday } from "@/lib/facts";
+import {
+  daysSinceLastWorkout,
+  isDetraining,
+  muscleGroupRecency,
+  nextPrTargets,
+  remainingToday,
+} from "@/lib/facts";
 import type { Exercise, PlannedExercise, PrBest } from "@/types/db";
 
 /**
@@ -94,6 +100,49 @@ describe("remainingToday (Flow 7: split AM/PM sessions)", () => {
   });
 });
 
+// ---------- muscleGroupRecency (adaptive readjustment, Risk #1) ----------
+
+describe("muscleGroupRecency", () => {
+  const today = new Date("2026-07-06T09:30:00");
+
+  it("returns [] with no sessions", () => {
+    expect(muscleGroupRecency([], today)).toEqual([]);
+  });
+
+  it("computes days-since per group, soonest-trained first", () => {
+    const result = muscleGroupRecency(
+      [
+        { date: "2026-07-04", muscle_groups: ["chest", "triceps"] },
+        { date: "2026-07-01", muscle_groups: ["back", "biceps"] },
+      ],
+      today,
+    );
+    expect(result).toEqual([
+      { muscle_group: "chest", days_since: 2, last_trained_on: "2026-07-04" },
+      { muscle_group: "triceps", days_since: 2, last_trained_on: "2026-07-04" },
+      { muscle_group: "back", days_since: 5, last_trained_on: "2026-07-01" },
+      { muscle_group: "biceps", days_since: 5, last_trained_on: "2026-07-01" },
+    ]);
+  });
+
+  it("keeps the most recent date when a group appears in several sessions", () => {
+    const result = muscleGroupRecency(
+      [
+        { date: "2026-07-01", muscle_groups: ["chest"] },
+        { date: "2026-07-05", muscle_groups: ["chest"] },
+        { date: "2026-07-03", muscle_groups: ["chest"] },
+      ],
+      today,
+    );
+    expect(result).toEqual([{ muscle_group: "chest", days_since: 1, last_trained_on: "2026-07-05" }]);
+  });
+
+  it("reports 0 days for a group trained today", () => {
+    const result = muscleGroupRecency([{ date: "2026-07-06", muscle_groups: ["quads"] }], today);
+    expect(result[0]).toMatchObject({ muscle_group: "quads", days_since: 0 });
+  });
+});
+
 // ---------- nextPrTargets ----------
 
 const ex = (id: string, is_bodyweight: boolean, unit: Exercise["unit"] = "reps"): Exercise => ({
@@ -102,6 +151,7 @@ const ex = (id: string, is_bodyweight: boolean, unit: Exercise["unit"] = "reps")
   aliases: [],
   is_bodyweight,
   unit,
+  muscle_groups: [],
   created_at: "2026-07-05",
 });
 

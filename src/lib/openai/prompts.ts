@@ -35,6 +35,16 @@ export interface FactsNextTargetLine {
   rule_applied: "add_weight" | "add_reps";
 }
 
+export interface FactsMuscleRecencyLine {
+  muscle_group: string;
+  days_since: number;
+}
+
+export interface FactsEquipment {
+  name: string;
+  items: string[];
+}
+
 export interface FactsBlockInput {
   today: string; // yyyy-mm-dd
   day_number: number; // 1 = Monday … 7 = Sunday
@@ -47,6 +57,8 @@ export interface FactsBlockInput {
   pr_bests: FactsPrLine[];
   next_pr_targets: FactsNextTargetLine[];
   history_summary: string; // preformatted, most recent first
+  muscle_recency: FactsMuscleRecencyLine[]; // computed per-group recency (adaptive readjustment)
+  equipment: FactsEquipment | null; // active equipment profile, or null
 }
 
 function fmtWeight(weight: number | null, isBodyweight: boolean): string {
@@ -99,9 +111,20 @@ export function buildFactsBlock(f: FactsBlockInput): string {
       lines.push(`- ${t.exercise_name}: ${t.target_reps}${w} (${t.rule_applied === "add_weight" ? "+2.5 lbs" : "+1 rep"})`);
     }
   }
+  if (f.muscle_recency.length > 0) {
+    lines.push("Recently trained (by muscle group, computed — soonest first):");
+    for (const m of f.muscle_recency) {
+      const when = m.days_since === 0 ? "today" : `${m.days_since} day${m.days_since === 1 ? "" : "s"} ago`;
+      lines.push(`- ${m.muscle_group}: ${when}`);
+    }
+  }
   if (f.history_summary) {
     lines.push("Recent sessions (most recent first):");
     lines.push(f.history_summary);
+  }
+  if (f.equipment) {
+    const items = f.equipment.items.length > 0 ? f.equipment.items.join(", ") : "bodyweight only";
+    lines.push(`Available equipment (active profile "${f.equipment.name}"): ${items}`);
   }
   lines.push("=== END FACTS ===");
   return lines.join("\n");
@@ -145,13 +168,15 @@ export function chatSystemPrompt(factsBlock: string): string {
     "You are the owner's personal strength coach inside their workout app.",
     "",
     "NON-NEGOTIABLE RULES:",
-    "1. The FACTS block below is computed by the app and is GROUND TRUTH. Never recompute, re-derive, or contradict any date, day-gap, remaining-set count, PR, or PR target. If your intuition disagrees with a fact, the fact wins.",
+    "1. The FACTS block below is computed by the app and is GROUND TRUTH. Never recompute, re-derive, or contradict any date, day-gap, remaining-set count, PR, PR target, or muscle-group recency. If your intuition disagrees with a fact, the fact wins.",
     "2. If detraining mode is YES: ease back in — reduced volume/intensity, no PR attempts, no PR-target talk.",
     "3. If there is no workout history (first run): give a sensible generic answer for the question and explicitly suggest logging today's session to start building history.",
-    "4. Weight semantics: for bodyweight movements, weights are ADDED load (\"BW +10\" = bodyweight plus 10 lbs).",
-    "5. Keep answers tight and practical — this is read on a phone, mid-workout. Plain text only: short paragraphs and dash lists; no markdown headers or tables.",
-    "6. When recommending work, give exercise / sets × reps / weight / rest, plus a short cue when useful.",
-    "7. Respect any equipment or time constraints stated in the question.",
+    "4. Weight semantics: for bodyweight movements, weights are ADDED load (\"BW +10\" = bodyweight plus 10 lbs). For BARBELL lifts, weight is the load PER SIDE (e.g. Squat 17.5 = 17.5 lbs per side); \"+2.5 lbs\" progression means per side (+5 lbs total). For DUMBBELL lifts, weight is PER HAND.",
+    "5. The weekly program is a BASELINE, not a contract. ADAPT today's recommendation when the facts give a reason: (a) if a muscle group in today's plan was trained recently (see recency facts), reduce its volume, swap to a different movement, reorder, or suggest recovery — don't blindly re-prescribe it; (b) if the active equipment can't do a planned lift, substitute an equivalent the available equipment supports. Name the trigger when you deviate (e.g. \"chest was hit 2 days ago, so…\").",
+    "6. GUARDRAIL: when nothing overlapping was trained recently AND the available equipment matches the plan, follow the plan as written — don't improvise for its own sake.",
+    "7. Equipment: only prescribe movements the active equipment profile supports; never assume equipment that isn't listed. If the user states a different location/equipment in their question, that overrides the active profile for this answer.",
+    "8. Keep answers tight and practical — this is read on a phone, mid-workout. Plain text only: short paragraphs and dash lists; no markdown headers or tables.",
+    "9. When recommending work, give exercise / sets × reps / weight / rest, plus a short cue when useful.",
     "",
     factsBlock,
   ].join("\n");

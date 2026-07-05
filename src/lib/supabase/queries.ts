@@ -4,8 +4,10 @@ import { dayNumberFor, toIsoDate } from "@/lib/dates";
 import {
   daysSinceLastWorkout,
   isDetraining,
+  muscleGroupRecency,
   nextPrTargets,
   remainingToday,
+  type MuscleGroupRecency,
   type RemainingExercise,
 } from "@/lib/facts";
 import type { Exercise, PlannedExercise, PrBest, ProgramDay, SessionPart } from "@/types/db";
@@ -89,6 +91,11 @@ export async function getTodayContext(now = new Date()): Promise<TodayContext> {
   };
 }
 
+export interface ActiveEquipment {
+  name: string;
+  items: string[];
+}
+
 export interface ChatContext extends TodayContext {
   pr_bests: PrBest[];
   next_targets: ReturnType<typeof nextPrTargets>;
@@ -98,25 +105,35 @@ export interface ChatContext extends TodayContext {
     part: SessionPart;
     sets: { exercise_name: string; reps: number; weight: number | null; unit: string; is_bodyweight: boolean }[];
   }[];
+  /** Per-muscle-group recency for adaptive readjustment (computed, ADR-0004). */
+  muscle_recency: MuscleGroupRecency[];
+  /** The active equipment profile — context for equipment-aware adaptation (null if none). */
+  equipment: ActiveEquipment | null;
 }
 
 export async function getChatContext(now = new Date()): Promise<ChatContext> {
   const sb = supabaseServer();
   const base = await getTodayContext(now);
 
-  const [{ data: bests, error: bestsErr }, { data: exercises, error: exErr }, { data: sessions, error: sessErr }] =
-    await Promise.all([
-      sb.from("pr_bests").select("*"),
-      sb.from("exercises").select("*"),
-      sb
-        .from("workout_sessions")
-        .select("id, date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight))")
-        .order("date", { ascending: false })
-        .limit(10),
-    ]);
+  const [
+    { data: bests, error: bestsErr },
+    { data: exercises, error: exErr },
+    { data: sessions, error: sessErr },
+    { data: activeProfile, error: equipErr },
+  ] = await Promise.all([
+    sb.from("pr_bests").select("*"),
+    sb.from("exercises").select("*"),
+    sb
+      .from("workout_sessions")
+      .select("id, date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight))")
+      .order("date", { ascending: false })
+      .limit(10),
+    sb.from("equipment_profiles").select("name, items").eq("is_active", true).maybeSingle(),
+  ]);
   throwIf(bestsErr);
   throwIf(exErr);
   throwIf(sessErr);
+  throwIf(equipErr);
 
   type SessionRow = {
     id: string;
@@ -146,11 +163,21 @@ export async function getChatContext(now = new Date()): Promise<ChatContext> {
   const prBests = (bests ?? []) as PrBest[];
   const allExercises = (exercises ?? []) as Exercise[];
 
+  // Map canonical name -> muscle groups, then fold each recent session into the
+  // union of groups it trained. Overlap is computed here; the model never infers it.
+  const groupsByName = new Map(allExercises.map((e) => [e.name, e.muscle_groups]));
+  const recencySessions = recent_sessions.map((s) => ({
+    date: s.date,
+    muscle_groups: [...new Set(s.sets.flatMap((set) => groupsByName.get(set.exercise_name) ?? []))],
+  }));
+
   return {
     ...base,
     pr_bests: prBests,
     next_targets: nextPrTargets(prBests, allExercises),
     exercises: allExercises,
     recent_sessions,
+    muscle_recency: muscleGroupRecency(recencySessions, now),
+    equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
   };
 }
