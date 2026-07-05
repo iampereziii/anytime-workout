@@ -1,5 +1,6 @@
 import { supabaseServer } from "@/lib/supabase/server";
 import { detectNewPrs } from "@/lib/facts";
+import { appToday, appTodayIso, isoDateDaysAgo, isWithinBackdateWindow } from "@/lib/dates";
 import { LogRequestSchema } from "@/lib/validators";
 import { ok, fail, failFrom } from "@/lib/http";
 import type { Exercise, PrBest } from "@/types/db";
@@ -33,6 +34,20 @@ export async function POST(req: Request) {
   const { date, part, notes, sets } = parsed.data;
 
   try {
+    // Server-side backdate window (feature brief AC #3), independent of the client's
+    // UI guard: reject any date outside [app-today − 7, app-today] in the app's
+    // pinned zone. This is what stops a "future" (from the server's viewpoint) row
+    // from ever existing — the client can only ever help, never bypass this.
+    const appNow = appToday();
+    if (!isWithinBackdateWindow(date, appNow)) {
+      const floorIso = isoDateDaysAgo(7, appNow);
+      return fail(
+        "date_out_of_window",
+        `date ${date} is outside the allowed window [${floorIso}, ${appTodayIso()}]`,
+        400,
+      );
+    }
+
     const sb = supabaseServer();
 
     // Pre-save snapshot for PR detection — degrade to no-celebration on failure.

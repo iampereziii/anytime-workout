@@ -80,12 +80,16 @@ export function TodayStatus() {
   if (error) return <p className="rounded-xl bg-zinc-100 p-3 text-sm text-zinc-500 dark:bg-zinc-900">{error}</p>;
   if (!today) return <p className="rounded-xl bg-zinc-100 p-3 text-sm text-zinc-400 dark:bg-zinc-900">Loading today…</p>;
 
+  // Belt-and-suspenders with the API clamp (AC #6): a negative recency is data
+  // drift, never a display case — floor it at 0 so the card can't show "-1 days ago".
+  const daysSince =
+    today.days_since_last_workout === null ? null : Math.max(0, today.days_since_last_workout);
   const recency =
-    today.days_since_last_workout === null
+    daysSince === null
       ? "No workouts logged yet — log one to start your history"
-      : today.days_since_last_workout === 0
+      : daysSince === 0
         ? "Last workout: today"
-        : `Last workout: ${today.days_since_last_workout} day${today.days_since_last_workout === 1 ? "" : "s"} ago`;
+        : `Last workout: ${daysSince} day${daysSince === 1 ? "" : "s"} ago`;
 
   const calendarLine = `Day ${today.day_number}${today.label ? ` — ${today.label}` : ""}`;
   // When the suggestion diverges, the card targets the suggested day's lifts.

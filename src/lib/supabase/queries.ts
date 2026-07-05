@@ -1,6 +1,6 @@
 import "server-only";
 import { supabaseServer } from "./server";
-import { dayNumberFor, toIsoDate } from "@/lib/dates";
+import { appToday, dayNumberFor, toIsoDate } from "@/lib/dates";
 import {
   daysSinceLastWorkout,
   isDetraining,
@@ -38,7 +38,7 @@ function throwIf(error: { message: string } | null): void {
   if (error) throw new Error(error.message);
 }
 
-export async function getTodayContext(now = new Date()): Promise<TodayContext> {
+export async function getTodayContext(now = appToday()): Promise<TodayContext> {
   const sb = supabaseServer();
   const today = toIsoDate(now);
   const day_number = dayNumberFor(now);
@@ -78,7 +78,19 @@ export async function getTodayContext(now = new Date()): Promise<TodayContext> {
   }
 
   const last_workout_date = lastSession?.date ?? null;
-  const days_since = daysSinceLastWorkout(last_workout_date ? [{ date: last_workout_date }] : [], now);
+  let days_since = daysSinceLastWorkout(last_workout_date ? [{ date: last_workout_date }] : [], now);
+
+  // Defense-in-depth (feature brief AC #2): with app-tz "today" a negative recency
+  // should be impossible; if one appears it means data-integrity drift (a session
+  // dated after the app's today), not a display case. Clamp to 0 and log — never
+  // surface a negative to any consumer.
+  if (days_since !== null && days_since < 0) {
+    console.warn(
+      `[data-integrity] days_since_last_workout computed negative (${days_since}): ` +
+        `last_workout_date=${last_workout_date} is after app-today=${today}. Clamping to 0.`,
+    );
+    days_since = 0;
+  }
 
   return {
     today,
@@ -148,7 +160,7 @@ export interface RecommendationContext {
  * lookup), and the latest session id for the cache fingerprint. Everything
  * numeric still flows through lib/facts (ADR-0004); this only fetches + shapes.
  */
-export async function getRecommendationContext(now = new Date()): Promise<RecommendationContext> {
+export async function getRecommendationContext(now = appToday()): Promise<RecommendationContext> {
   const sb = supabaseServer();
   const base = await getTodayContext(now);
 
@@ -245,7 +257,7 @@ export async function getRecommendationContext(now = new Date()): Promise<Recomm
   };
 }
 
-export async function getChatContext(now = new Date()): Promise<ChatContext> {
+export async function getChatContext(now = appToday()): Promise<ChatContext> {
   const sb = supabaseServer();
   const base = await getTodayContext(now);
 
