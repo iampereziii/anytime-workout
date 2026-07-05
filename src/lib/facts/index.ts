@@ -73,6 +73,18 @@ export function muscleGroupRecency(
     .sort((a, b) => a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group));
 }
 
+/**
+ * Cache key for the Today recommendation (feature brief: ai-today-recommendation,
+ * Risk #2). The recommendation is a function of two things that change the facts:
+ * the calendar day (rolls at midnight) and the latest logged session (a new log
+ * inserts a new workout_sessions row). Fingerprinting both means a new log OR a
+ * date rollover is a natural cache miss — no invalidation hook needed. Same
+ * fingerprint on a reload → cache hit → zero model calls (AC #4).
+ */
+export function recommendationFingerprint(today: string, latestSessionId: string | null): string {
+  return `${today}:${latestSessionId ?? "none"}`;
+}
+
 export interface RemainingExercise {
   planned: PlannedExercise;
   setsDone: number;

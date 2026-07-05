@@ -44,3 +44,29 @@ export const RecommendationSchema = z.object({
 });
 
 export type Recommendation = z.infer<typeof RecommendationSchema>;
+
+/**
+ * Today-card recommendation (feature brief: ai-today-recommendation).
+ * The model PICKS a focus among the program's own day labels (Risk #1) and
+ * composes a one-line headline + one-line reason — it never derives numbers
+ * (ADR-0004). suggested_focus is a schema-constrained enum built from the live
+ * program day labels, so the value always maps back to a real program day for
+ * the "Suggested lifts" pill lookup. Built per-request because the allowed
+ * labels come from the DB.
+ */
+export function todayRecommendationSchema(focuses: readonly [string, ...string[]]) {
+  return z.object({
+    /** One of the program's day labels (push/pull/legs/rest…). */
+    suggested_focus: z.enum(focuses),
+    /** One line, card headline — e.g. "Suggested: Pull". */
+    headline: z.string(),
+    /** One line citing the computed reason — e.g. "you hit push yesterday; back/biceps are 4 days cold". */
+    reason: z.string(),
+  });
+}
+
+export interface TodayRecommendation {
+  suggested_focus: string;
+  headline: string;
+  reason: string;
+}

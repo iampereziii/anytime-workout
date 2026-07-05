@@ -10,6 +10,7 @@ import {
   type MuscleGroupRecency,
   type RemainingExercise,
 } from "@/lib/facts";
+import type { HistorySession } from "@/lib/openai/prompts";
 import type { Exercise, PlannedExercise, PrBest, ProgramDay, SessionPart } from "@/types/db";
 
 /**
@@ -109,6 +110,139 @@ export interface ChatContext extends TodayContext {
   muscle_recency: MuscleGroupRecency[];
   /** The active equipment profile — context for equipment-aware adaptation (null if none). */
   equipment: ActiveEquipment | null;
+}
+
+export interface SuggestedLift {
+  exercise_name: string;
+  target_sets: number;
+  target_reps: number | null;
+  target_weight: number | null;
+  unit: string;
+  sort_order: number;
+}
+
+export interface ProgramDayCatalogEntry {
+  day_number: number;
+  label: string;
+  notes: string | null;
+  planned: SuggestedLift[];
+}
+
+export interface RecommendationContext {
+  base: TodayContext;
+  /** Per-muscle-group recency for the recommendation reason (computed, ADR-0004). */
+  muscle_recency: MuscleGroupRecency[];
+  /** Every day of the active program + its planned lifts — the allowed focuses
+   *  (distinct labels) and the source for "Suggested lifts" on divergence. */
+  program_days: ProgramDayCatalogEntry[];
+  /** Latest logged session id — half of the cache fingerprint (Risk #2). */
+  latest_session_id: string | null;
+  /** Compact history lines for the prompt (most recent first). */
+  history: HistorySession[];
+}
+
+/**
+ * Context for GET /api/recommendation (feature brief: ai-today-recommendation).
+ * Reuses getTodayContext for the deterministic today facts, then adds per-group
+ * recency, the full program-day catalog (allowed focuses + suggested-lifts
+ * lookup), and the latest session id for the cache fingerprint. Everything
+ * numeric still flows through lib/facts (ADR-0004); this only fetches + shapes.
+ */
+export async function getRecommendationContext(now = new Date()): Promise<RecommendationContext> {
+  const sb = supabaseServer();
+  const base = await getTodayContext(now);
+
+  const [
+    { data: sessions, error: sessErr },
+    { data: days, error: daysErr },
+    { data: latest, error: latestErr },
+  ] = await Promise.all([
+    sb
+      .from("workout_sessions")
+      .select("id, date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight, muscle_groups))")
+      .order("date", { ascending: false })
+      .limit(10),
+    sb
+      .from("program_days")
+      .select(
+        "day_number, label, notes, programs!inner(is_active), planned_exercises(target_sets, target_reps, target_weight, sort_order, exercise:exercises(name, unit))",
+      )
+      .eq("programs.is_active", true)
+      .order("day_number"),
+    sb.from("workout_sessions").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  throwIf(sessErr);
+  throwIf(daysErr);
+  throwIf(latestErr);
+
+  type SessionRow = {
+    date: string;
+    part: SessionPart;
+    logged_sets: {
+      reps: number;
+      weight: number | null;
+      exercise: { name: string; unit: string; is_bodyweight: boolean; muscle_groups: string[] } | null;
+    }[];
+  };
+  const sessionRows = (sessions ?? []) as unknown as SessionRow[];
+
+  // Fold each session into the union of muscle groups it trained. Overlap is
+  // computed here (ADR-0004), never inferred by the model.
+  const recencySessions = sessionRows.map((s) => ({
+    date: s.date,
+    muscle_groups: [...new Set(s.logged_sets.flatMap((ls) => ls.exercise?.muscle_groups ?? []))],
+  }));
+
+  const history: HistorySession[] = sessionRows.map((s) => ({
+    date: s.date,
+    part: s.part,
+    sets: s.logged_sets
+      .filter((ls) => ls.exercise !== null)
+      .map((ls) => ({
+        exercise_name: ls.exercise!.name,
+        reps: ls.reps,
+        weight: ls.weight,
+        unit: ls.exercise!.unit,
+        is_bodyweight: ls.exercise!.is_bodyweight,
+      })),
+  }));
+
+  type DayRow = {
+    day_number: number;
+    label: string;
+    notes: string | null;
+    planned_exercises: {
+      target_sets: number;
+      target_reps: number | null;
+      target_weight: number | null;
+      sort_order: number;
+      exercise: { name: string; unit: string } | null;
+    }[];
+  };
+  const program_days: ProgramDayCatalogEntry[] = ((days ?? []) as unknown as DayRow[]).map((d) => ({
+    day_number: d.day_number,
+    label: d.label,
+    notes: d.notes,
+    planned: d.planned_exercises
+      .filter((p) => p.exercise !== null)
+      .map((p) => ({
+        exercise_name: p.exercise!.name,
+        target_sets: p.target_sets,
+        target_reps: p.target_reps,
+        target_weight: p.target_weight,
+        unit: p.exercise!.unit,
+        sort_order: p.sort_order,
+      }))
+      .sort((a, b) => a.sort_order - b.sort_order),
+  }));
+
+  return {
+    base,
+    muscle_recency: muscleGroupRecency(recencySessions, now),
+    program_days,
+    latest_session_id: latest?.id ?? null,
+    history,
+  };
 }
 
 export async function getChatContext(now = new Date()): Promise<ChatContext> {

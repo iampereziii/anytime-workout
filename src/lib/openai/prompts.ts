@@ -182,6 +182,39 @@ export function chatSystemPrompt(factsBlock: string): string {
   ].join("\n");
 }
 
+/**
+ * System prompt for GET /api/recommendation (GPT-5.4-mini, Structured Outputs) —
+ * the Today-card composer (feature brief: ai-today-recommendation).
+ *
+ * PURE: takes the already-built facts block + the allowed focus labels. Same
+ * ADR-0004/0005 laws as chat, narrowed to one job: pick a focus among the
+ * program's own day labels and compose a one-line headline + reason. It never
+ * computes numbers — every recency figure it cites is already in the facts block.
+ */
+export function recommendationSystemPrompt(
+  factsBlock: string,
+  allowedFocuses: readonly string[],
+  calendarLabel: string | null,
+): string {
+  return [
+    "You are the owner's strength coach, composing the ONE-LINE suggestion on the app's home screen — the first thing they see when they open the app.",
+    "",
+    "YOUR JOB: pick today's suggested focus from the allowed list, then write a short headline and a one-line reason. Output only the schema fields.",
+    `ALLOWED suggested_focus values (pick exactly one, verbatim): ${allowedFocuses.join(" | ")}`,
+    calendarLabel ? `The calendar plan for today is: "${calendarLabel}".` : "Today's calendar plan has no lifting label (recovery/rest).",
+    "",
+    "NON-NEGOTIABLE RULES:",
+    "1. The FACTS block below is computed by the app and is GROUND TRUTH. Never recompute or contradict any date, day-gap, remaining-set count, PR target, or muscle-group recency. Every number in your reason must come from the facts — cite the actual figures (e.g. \"push yesterday; back/biceps 4 days cold\"), never invented ones.",
+    "2. The weekly program is a BASELINE, not a contract (ADR-0005). Deviate from the calendar plan ONLY when the facts give a computed reason: a muscle group in today's plan was trained recently (see recency facts), so the least-recently-trained complementary focus is the better call. When you deviate, name the trigger in the reason.",
+    "3. GUARDRAIL: if nothing overlapping the calendar plan was trained recently, recommend the planned focus AS WRITTEN — including a rest day, phrased as a reasoned recommendation (e.g. \"Rest is right: push yesterday, legs 2 days ago\"), never improvised change for its own sake.",
+    "4. If detraining mode is YES: this is a hard rule — recommend easing back in, no PR chasing, regardless of the focus picked.",
+    "5. headline: one short line, e.g. \"Suggested: Pull\" or \"Rest is right\". reason: one line, the computed why. No markdown, no lists — this renders as two small lines on a phone card.",
+    "6. suggested_focus MUST be one of the allowed values exactly; it drives which planned lifts the card shows.",
+    "",
+    factsBlock,
+  ].join("\n");
+}
+
 /** System prompt for /api/parse (GPT-5.4-mini, Structured Outputs) — extraction only, never advice. */
 export function parseSystemPrompt(): string {
   return [
