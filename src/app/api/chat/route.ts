@@ -71,6 +71,11 @@ export async function POST(req: Request) {
         rule_applied: t.rule_applied,
       })),
       history_summary: formatHistorySummary(ctx.recent_sessions),
+      muscle_recency: ctx.muscle_recency.map((m) => ({
+        muscle_group: m.muscle_group,
+        days_since: m.days_since,
+      })),
+      equipment: ctx.equipment,
     });
 
     const events = await openai().responses.create({

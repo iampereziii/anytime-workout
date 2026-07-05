@@ -41,3 +41,13 @@ export async function apiPost<T>(url: string, body: unknown): Promise<T> {
     }),
   );
 }
+
+export async function apiPut<T>(url: string, body: unknown): Promise<T> {
+  return handle<T>(
+    await fetch(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}

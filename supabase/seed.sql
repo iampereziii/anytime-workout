@@ -6,27 +6,34 @@
 begin;
 
 -- ---------- canonical exercises ----------
-insert into exercises (name, aliases, is_bodyweight, unit) values
-  ('Incline Push-up',       array['incline pushup','elevated push-up','elevated pushup'], true,  'reps'),
-  ('Push-up',               array['pushup','regular push-up'],                            true,  'reps'),
-  ('Pull-up',               array['pullup'],                                              true,  'reps'),
-  ('Chin-up',               array['chinup'],                                              true,  'reps'),
-  ('Barbell Row',           array['bb row'],                                              false, 'reps'),
-  ('Overhead Press',        array['OHP'],                                                 false, 'reps'),
-  ('DB Shoulder Press',     array['dumbbell shoulder press'],                             false, 'reps'),
-  ('Lateral Raise',         array['lateral raises'],                                      false, 'reps'),
-  ('Plank',                 array[]::text[],                                              true,  'seconds'),
-  ('Hanging Leg Raise',     array[]::text[],                                              true,  'reps'),
-  ('Squat',                 array['squats'],                                              false, 'reps'),
-  ('Romanian Deadlift',     array['RDL','romanian dead lift'],                            false, 'reps'),
-  ('Deadlift',              array[]::text[],                                              false, 'reps'),
-  ('Lunge',                 array['lunges'],                                              false, 'reps'),
-  ('Step-up',               array['step ups'],                                            false, 'reps'),
-  ('Calf Raise',            array['calf raises'],                                         true,  'reps'),
-  ('Barbell Curl',          array['bb curl'],                                             false, 'reps'),
-  ('Tricep Dip',            array['dips'],                                                true,  'reps'),
-  ('Walk / Mobility',       array['walk','mobility'],                                     true,  'minutes'),
-  ('Conditioning Intervals',array['intervals'],                                           true,  'minutes');
+-- muscle_groups (col added in migration 0002): primary + secondary; empty = cardio/none.
+-- Feeds app-computed per-muscle-group recency (adaptive-readjustment feature, Risk #1).
+insert into exercises (name, aliases, is_bodyweight, unit, muscle_groups) values
+  ('Incline Push-up',       array['incline pushup','elevated push-up','elevated pushup'], true,  'reps',    array['chest','triceps','shoulders']),
+  ('Push-up',               array['pushup','regular push-up'],                            true,  'reps',    array['chest','triceps','shoulders']),
+  ('Pull-up',               array['pullup'],                                              true,  'reps',    array['back','biceps']),
+  ('Chin-up',               array['chinup'],                                              true,  'reps',    array['back','biceps']),
+  ('Barbell Row',           array['bb row'],                                              false, 'reps',    array['back','biceps']),
+  ('Overhead Press',        array['OHP'],                                                 false, 'reps',    array['shoulders','triceps']),
+  ('DB Shoulder Press',     array['dumbbell shoulder press'],                             false, 'reps',    array['shoulders','triceps']),
+  ('Lateral Raise',         array['lateral raises'],                                      false, 'reps',    array['shoulders']),
+  ('Plank',                 array[]::text[],                                              true,  'seconds', array['core']),
+  ('Hanging Leg Raise',     array[]::text[],                                              true,  'reps',    array['core']),
+  ('Squat',                 array['squats'],                                              false, 'reps',    array['quads','glutes']),
+  ('Romanian Deadlift',     array['RDL','romanian dead lift'],                            false, 'reps',    array['hamstrings','glutes','back']),
+  ('Deadlift',              array[]::text[],                                              false, 'reps',    array['back','hamstrings','glutes']),
+  ('Lunge',                 array['lunges'],                                              false, 'reps',    array['quads','glutes']),
+  ('Step-up',               array['step ups'],                                            false, 'reps',    array['quads','glutes']),
+  ('Calf Raise',            array['calf raises'],                                         true,  'reps',    array['calves']),
+  ('Barbell Curl',          array['bb curl'],                                             false, 'reps',    array['biceps']),
+  ('Tricep Dip',            array['dips'],                                                true,  'reps',    array['triceps','chest']),
+  ('Floor Press',           array['floor press'],                                         false, 'reps',    array['chest','triceps']),
+  ('Jump Squat',            array['jump squats'],                                         true,  'reps',    array['quads','glutes']),
+  ('Walk / Mobility',       array['walk','mobility'],                                     true,  'minutes', array[]::text[]),
+  ('Conditioning Intervals',array['intervals'],                                           true,  'minutes', array[]::text[])
+-- on conflict: migration 0002 runs before seed on a fresh reset and inserts
+-- Floor Press + Jump Squat; skip them here rather than aborting the seed txn.
+on conflict do nothing;
 
 -- ---------- program ----------
 insert into programs (name, is_active) values ('6-Day Split v1', true);
@@ -35,11 +42,11 @@ insert into program_days (program_id, day_number, label, notes)
 select p.id, d.n, d.label, d.notes
 from programs p,
 (values
-  (1, 'Upper Body — Chest + Back', null),
-  (2, 'Lower Body', null),
-  (3, 'Arms + Shoulders', null),
+  (1, 'Upper Body — Chest + Back', '+ 20-30 min walk, any time of day.'),
+  (2, 'Lower Body', '+ 20-30 min walk, any time of day.'),
+  (3, 'Arms + Shoulders', '+ 20-30 min walk, any time of day.'),
   (4, 'Active Recovery', 'Walk / Mobility, 20–30 min'),
-  (5, 'Full Body — Power Day', null),
+  (5, 'Full Body — Power Day', '+ 20-30 min walk, any time of day.'),
   (6, 'Conditioning', 'Intervals 30s work / 60s rest ×10 (~15 min) OR incline walk 20 min'),
   (7, 'Rest', 'Full rest — recovery')
 ) as d(n, label, notes)
@@ -49,13 +56,14 @@ where p.name = '6-Day Split v1';
 insert into planned_exercises (program_day_id, exercise_id, target_sets, target_reps, target_weight, rest_seconds, notes, sort_order)
 select pd.id, e.id, v.sets, v.reps, v.weight, v.rest, v.notes, v.ord
 from (values
-  -- Day 1
+  -- Day 1  (Floor Press added 2026-07-06 at slot 3 — chest volume + uses the barbell)
   (1, 'Incline Push-up',   4, 12,   null::numeric, 120, 'BW or +10 lbs',                 1),
   (1, 'Pull-up',           4, 8,    null,          120, null,                            2),
-  (1, 'Barbell Row',       4, 12,   32.5,          180, 'slow',                          3),
-  (1, 'Overhead Press',    3, 12,   25,            120, null,                            4),
-  (1, 'Lateral Raise',     4, 12,   12.5,          60,  null,                            5),
-  (1, 'Plank',             3, 60,   null,          60,  null,                            6),
+  (1, 'Floor Press',       4, 9,    32.5,          120, 'added 2026-07-06; adjust to 1-2 RIR', 3),
+  (1, 'Barbell Row',       4, 12,   32.5,          180, 'slow',                          4),
+  (1, 'Overhead Press',    3, 12,   25,            120, null,                            5),
+  (1, 'Lateral Raise',     4, 12,   12.5,          60,  null,                            6),
+  (1, 'Plank',             3, 60,   null,          60,  null,                            7),
   -- Day 2
   (2, 'Squat',             4, 14,   17.5,          120, null,                            1),
   (2, 'Romanian Deadlift', 4, 12,   32.5,          120, null,                            2),
@@ -68,12 +76,13 @@ from (values
   (3, 'Tricep Dip',        3, 12,   10,            120, 'BW +10',                        4),
   (3, 'Lateral Raise',     4, 12,   12.5,          60,  null,                            5),
   (3, 'Hanging Leg Raise', 3, 12,   null,          60,  null,                            6),
-  -- Day 5
-  (5, 'Deadlift',          4, 9,    32.5,          180, 'slow negatives + 10-sec hold',  1),
-  (5, 'Push-up',           3, null, null,          120, 'max reps (AMRAP)',              2),
-  (5, 'Step-up',           3, 12,   10,            120, 'weight if available',           3),
-  (5, 'Barbell Row',       3, 12,   32.5,          120, 'slow',                          4),
-  (5, 'Plank',             3, 60,   null,          60,  'or Hanging Leg Raise ×12',      5)
+  -- Day 5  (Jump Squat added 2026-07-06 at slot 1 — explosive intent before fatigue)
+  (5, 'Jump Squat',        3, 5,    null,          120, 'explosive intent, first slot',  1),
+  (5, 'Deadlift',          4, 9,    32.5,          180, 'slow negatives + 10-sec hold',  2),
+  (5, 'Push-up',           3, null, null,          120, 'max reps (AMRAP)',              3),
+  (5, 'Step-up',           3, 12,   10,            120, 'weight if available',           4),
+  (5, 'Barbell Row',       3, 12,   32.5,          120, 'slow',                          5),
+  (5, 'Plank',             3, 60,   null,          60,  'or Hanging Leg Raise ×12',      6)
 ) as v(day_n, ex_name, sets, reps, weight, rest, notes, ord)
 join program_days pd on pd.day_number = v.day_n
 join programs p      on p.id = pd.program_id and p.name = '6-Day Split v1'
@@ -145,8 +154,10 @@ join workout_sessions ws on ws.date = v.session_date::date
 join exercises e         on lower(e.name) = lower(v.ex_name);
 
 -- ---------- equipment ----------
+-- Home has no bench (owner, 2026-07-06). Gym branch profiles are added when the
+-- owner enumerates a location's equipment (feature brief, Risk #3).
 insert into equipment_profiles (name, items, is_active) values
-  ('Home', array['barbell','dumbbells','pull-up bar','bench','plates'], true);
+  ('Home', array['barbell','dumbbells','pull-up bar','plates'], true);
 
 commit;
 
