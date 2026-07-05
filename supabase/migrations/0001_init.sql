@@ -100,6 +100,22 @@ order by
   case when e.is_bodyweight then coalesce(ls.weight, 0) else ls.reps  end desc,
   ws.date desc;
 
+-- Views bypass table RLS by default (owner's rights). security_invoker makes
+-- pr_bests respect the caller's RLS — service role still sees everything.
+alter view pr_bests set (security_invoker = true);
+
+-- ---------- RLS: enabled, NO policies (deny-all for anon/authenticated) ----------
+-- All v1 access is server-side via the service role, which BYPASSES RLS —
+-- so this costs nothing and blocks the anon key entirely (defense-in-depth).
+-- If v2 ever adds client-side queries, that's when real policies get written.
+alter table exercises          enable row level security;
+alter table programs           enable row level security;
+alter table program_days       enable row level security;
+alter table planned_exercises  enable row level security;
+alter table workout_sessions   enable row level security;
+alter table logged_sets        enable row level security;
+alter table equipment_profiles enable row level security;
+
 -- ---------- search RPC (ADR-0003: trigram + exact alias match, threshold 0.5) ----------
 -- Returns candidates for the combobox and the "did you mean?" dedup check.
 -- Alias hits rank first (similarity 1.0) — trigram can't see abbreviations

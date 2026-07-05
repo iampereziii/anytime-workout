@@ -11,6 +11,11 @@ export function dayNumberFor(date: Date): number {
   return ((date.getDay() + 6) % 7) + 1;
 }
 
+/** Local date N days before `from`, as yyyy-mm-dd (backdate window bounds). */
+export function isoDateDaysAgo(days: number, from = new Date()): string {
+  return toIsoDate(new Date(from.getFullYear(), from.getMonth(), from.getDate() - days));
+}
+
 /** Local-date ISO string (yyyy-mm-dd). NOT toISOString() — that would shift days across timezones. */
 export function toIsoDate(date: Date): string {
   const y = date.getFullYear();

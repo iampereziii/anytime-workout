@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import { didYouMean, type ExerciseMatch } from "@/lib/exercises/dedup";
+import { normalizeExerciseName } from "@/lib/exercises/normalize";
 import type { ParsedLog } from "@/lib/openai/schemas";
 import { Button } from "@/components/ui/button";
+import { CreateFields, defaultCreateOpts, type CreateOpts } from "./CreateFields";
 import type { Exercise } from "@/types/db";
 import type { PendingEntry } from "./types";
 
@@ -25,6 +27,8 @@ interface ProposalRow {
   candidates: ExerciseMatch[];
   /** exercise id, or "__create__" for create-new. */
   chosen: string;
+  /** Only used when chosen === "__create__" — PR-track fields for the new exercise. */
+  create_opts: CreateOpts;
 }
 
 export function FreeTextLog({
@@ -36,7 +40,7 @@ export function FreeTextLog({
   exercises: Exercise[];
   online: boolean;
   onAdd: (entries: PendingEntry[]) => void;
-  onCreate: (name: string) => Promise<Exercise | null>;
+  onCreate: (name: string, opts: CreateOpts) => Promise<Exercise | null>;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -59,8 +63,9 @@ export function FreeTextLog({
       for (const entry of parsed.entries) {
         let candidates: ExerciseMatch[] = [];
         try {
+          // Same query hygiene as the combobox — one dedup brain, two doors (rule 2).
           const data = await apiGet<{ results: ExerciseMatch[] }>(
-            `/api/exercises?q=${encodeURIComponent(entry.raw_name)}`,
+            `/api/exercises?q=${encodeURIComponent(normalizeExerciseName(entry.raw_name))}`,
           );
           candidates = data.results;
         } catch {
@@ -73,6 +78,7 @@ export function FreeTextLog({
           weight: entry.weight_lbs,
           candidates,
           chosen: strong.length > 0 ? strong[0].id : "__create__",
+          create_opts: defaultCreateOpts,
         });
       }
       setProposals(rows);
@@ -93,7 +99,7 @@ export function FreeTextLog({
       for (const row of proposals) {
         let exercise: Pick<Exercise, "id" | "name" | "unit" | "is_bodyweight">;
         if (row.chosen === "__create__") {
-          const created = await onCreate(row.raw_name);
+          const created = await onCreate(row.raw_name, row.create_opts);
           if (!created) return; // creation failed/cancelled — keep proposals for retry
           exercise = created;
         } else {
@@ -166,8 +172,20 @@ export function FreeTextLog({
                     {c.name} ({Math.round(c.similarity * 100)}%{c.matched_alias ? ", alias" : ""})
                   </option>
                 ))}
-                <option value="__create__">➕ Create “{row.raw_name}” as new</option>
+                <option value="__create__">➕ Create “{normalizeExerciseName(row.raw_name)}” as new</option>
               </select>
+              {row.chosen === "__create__" && (
+                <div className="mt-2">
+                  <CreateFields
+                    value={row.create_opts}
+                    onChange={(create_opts) =>
+                      setProposals((prev) =>
+                        prev ? prev.map((r, j) => (j === i ? { ...r, create_opts } : r)) : prev,
+                      )
+                    }
+                  />
+                </div>
+              )}
             </div>
           ))}
           <div className="flex gap-2">

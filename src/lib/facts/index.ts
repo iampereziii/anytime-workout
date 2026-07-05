@@ -64,6 +64,69 @@ export function remainingToday(
     .filter((r) => r.setsRemaining > 0);
 }
 
+export interface NewPr {
+  exercise_id: string;
+  reps: number;
+  weight: number | null;
+  previous: { reps: number; weight: number | null };
+  /** Which axis beat the record: load for weighted movements, volume for bodyweight. */
+  rule_applied: "weight" | "reps";
+}
+
+type SetLike = Pick<LoggedSet, "exercise_id" | "reps" | "weight">;
+
+/**
+ * Does candidate beat incumbent under the pr_bests view's exact ordering
+ * (business rule 3)? Weighted: weight first, reps tie-break; bodyweight:
+ * reps first, added-weight tie-break. NULL weight ranks as 0, like the view.
+ */
+function beats(
+  candidate: SetLike,
+  incumbent: { reps: number; weight: number | null },
+  isBodyweight: boolean,
+): boolean {
+  const cw = candidate.weight ?? 0;
+  const iw = incumbent.weight ?? 0;
+  if (isBodyweight) {
+    return candidate.reps > incumbent.reps || (candidate.reps === incumbent.reps && cw > iw);
+  }
+  return cw > iw || (cw === iw && candidate.reps > incumbent.reps);
+}
+
+/**
+ * New-PR detection for a confirmed save (feature brief: pr-celebration-on-new-best).
+ * Compare incoming sets against the PRE-save bests, per variation. At most one
+ * entry per exercise (the best of the batch). No prior best → no celebration —
+ * a first-ever log is a baseline, not a record broken.
+ */
+export function detectNewPrs(
+  bests: PrBest[],
+  sets: SetLike[],
+  exercises: Pick<Exercise, "id" | "is_bodyweight">[],
+): NewPr[] {
+  const bestById = new Map(bests.map((b) => [b.exercise_id, b]));
+  const bwById = new Map(exercises.map((e) => [e.id, e.is_bodyweight]));
+
+  const winners = new Map<string, NewPr>();
+  for (const set of sets) {
+    const best = bestById.get(set.exercise_id);
+    if (!best) continue;
+    const isBodyweight = bwById.get(set.exercise_id) ?? best.is_bodyweight;
+
+    const incumbent = winners.get(set.exercise_id) ?? { reps: best.best_reps, weight: best.best_weight };
+    if (!beats(set, incumbent, isBodyweight)) continue;
+
+    winners.set(set.exercise_id, {
+      exercise_id: set.exercise_id,
+      reps: set.reps,
+      weight: set.weight,
+      previous: { reps: best.best_reps, weight: best.best_weight },
+      rule_applied: isBodyweight ? "reps" : "weight",
+    });
+  }
+  return [...winners.values()];
+}
+
 export interface NextPrTarget {
   exercise_id: string;
   target_reps: number;

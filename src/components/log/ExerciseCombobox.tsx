@@ -4,9 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Command } from "cmdk";
 import { apiGet } from "@/lib/api-client";
 import { didYouMean, searchOffline, type ExerciseMatch } from "@/lib/exercises/dedup";
+import { normalizeExerciseName } from "@/lib/exercises/normalize";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ConfirmSheet } from "./ConfirmSheet";
+import { CreateFields, defaultCreateOpts, type CreateOpts } from "./CreateFields";
 import type { Exercise } from "@/types/db";
 
 /**
@@ -14,9 +16,10 @@ import type { Exercise } from "@/types/db";
  * Online, candidates come from the search_exercises RPC; offline, from the
  * cached list via the client trigram mirror — so /log works in gym dead-zones.
  *
- * Create flow (business rule 1 — never silent, never blocked): "Create X"
- * first runs the ≥0.5 did-you-mean check; the user picks an existing match or
- * explicitly creates anyway.
+ * Create flow (business rules 1 + normalization brief): "Create X" ALWAYS opens
+ * the confirm sheet — normalized name preview, any ≥0.5 did-you-mean matches,
+ * and the bodyweight/unit fields (so new exercises land on the right PR track).
+ * The user always chooses; nothing is auto-applied or blocked.
  */
 export function ExerciseCombobox({
   exercises,
@@ -27,11 +30,12 @@ export function ExerciseCombobox({
   exercises: Exercise[];
   online: boolean;
   onSelect: (exercise: Exercise) => void;
-  onCreate: (name: string) => Promise<Exercise | null>;
-  }) {
+  onCreate: (name: string, opts: CreateOpts) => Promise<Exercise | null>;
+}) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ExerciseMatch[]>([]);
-  const [dedupFor, setDedupFor] = useState<{ name: string; candidates: ExerciseMatch[] } | null>(null);
+  const [createFor, setCreateFor] = useState<{ name: string; candidates: ExerciseMatch[] } | null>(null);
+  const [createOpts, setCreateOpts] = useState<CreateOpts>(defaultCreateOpts);
   const [creating, setCreating] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -45,16 +49,20 @@ export function ExerciseCombobox({
         setResults([]);
         return;
       }
+      // Normalized query gives the trigram real word boundaries ("benchPress" → "Bench Press").
+      const searchQ = normalizeExerciseName(q);
       if (online) {
         try {
-          const data = await apiGet<{ results: ExerciseMatch[] }>(`/api/exercises?q=${encodeURIComponent(q)}`);
+          const data = await apiGet<{ results: ExerciseMatch[] }>(
+            `/api/exercises?q=${encodeURIComponent(searchQ)}`,
+          );
           setResults(data.results);
           return;
         } catch {
           // fall through to the offline mirror
         }
       }
-      setResults(searchOffline(exercises, q));
+      setResults(searchOffline(exercises, searchQ));
     }, q ? 200 : 0);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -70,12 +78,13 @@ export function ExerciseCombobox({
     onSelect(detail);
   }
 
-  async function create(name: string) {
+  async function create() {
+    if (!createFor) return;
     setCreating(true);
     try {
-      const created = await onCreate(name);
+      const created = await onCreate(createFor.name, createOpts);
       if (created) {
-        setDedupFor(null);
+        setCreateFor(null);
         setQuery("");
         setResults([]);
         onSelect(created);
@@ -85,20 +94,17 @@ export function ExerciseCombobox({
     }
   }
 
-  /** "Create X" entry point — runs the did-you-mean check first (rule 1). */
+  /** "Create X" entry point — always opens the confirm sheet (dedup + fields). */
   function requestCreate() {
-    const name = query.trim();
+    const name = normalizeExerciseName(query);
     if (!name) return;
-    const candidates = didYouMean(results);
-    if (candidates.length > 0) {
-      setDedupFor({ name, candidates });
-    } else {
-      void create(name);
-    }
+    setCreateOpts(defaultCreateOpts);
+    setCreateFor({ name, candidates: didYouMean(results) });
   }
 
   const q = query.trim();
-  const exactMatch = results.some((r) => r.name.toLowerCase() === q.toLowerCase());
+  const normalized = q ? normalizeExerciseName(q) : "";
+  const exactMatch = results.some((r) => r.name.toLowerCase() === normalized.toLowerCase());
   const listed = q ? results : exercises.map((e) => ({ id: e.id, name: e.name, similarity: 0, matched_alias: false }));
 
   return (
@@ -132,7 +138,7 @@ export function ExerciseCombobox({
               disabled={!online || creating}
               className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm text-emerald-600 data-[selected=true]:bg-emerald-600/10 data-[disabled=true]:opacity-50 dark:text-emerald-400"
             >
-              ＋ Create “{q}”{!online && " (needs connection)"}
+              ＋ Create “{normalized}”{!online && " (needs connection)"}
             </Command.Item>
           )}
           {q && listed.length === 0 && exactMatch === false && (
@@ -142,19 +148,19 @@ export function ExerciseCombobox({
       </Command>
 
       <ConfirmSheet
-        open={dedupFor !== null}
-        title={`Did you mean one of these?`}
-        onClose={() => setDedupFor(null)}
+        open={createFor !== null}
+        title={createFor?.candidates.length ? "Did you mean one of these?" : `Create “${createFor?.name}”`}
+        onClose={() => setCreateFor(null)}
       >
-        {dedupFor && (
+        {createFor && (
           <div className="flex flex-col gap-2">
-            {dedupFor.candidates.map((c) => (
+            {createFor.candidates.map((c) => (
               <Button
                 key={c.id}
                 variant="outline"
                 className="justify-between"
                 onClick={() => {
-                  setDedupFor(null);
+                  setCreateFor(null);
                   pick(c.id, c.name);
                 }}
               >
@@ -162,8 +168,13 @@ export function ExerciseCombobox({
                 <span className="text-xs text-zinc-500">{Math.round(c.similarity * 100)}% similar</span>
               </Button>
             ))}
-            <Button disabled={creating} onClick={() => void create(dedupFor.name)}>
-              {creating ? "Creating…" : `No — create “${dedupFor.name}”`}
+            <CreateFields value={createOpts} onChange={setCreateOpts} />
+            <Button disabled={creating} onClick={() => void create()}>
+              {creating
+                ? "Creating…"
+                : createFor.candidates.length
+                  ? `No — create “${createFor.name}”`
+                  : `Create “${createFor.name}”`}
             </Button>
           </div>
         )}

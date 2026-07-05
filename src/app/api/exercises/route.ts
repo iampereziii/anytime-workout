@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { normalizeExerciseName } from "@/lib/exercises/normalize";
 import { ExerciseCreateSchema } from "@/lib/validators";
 import { ok, fail, failFrom } from "@/lib/http";
 
@@ -41,12 +42,15 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return fail("bad_request", parsed.error.issues.map((i) => i.message).join("; "), 400);
   }
+  // Server is authoritative for the canonical form — a stale client can't bypass this.
+  const name = normalizeExerciseName(parsed.data.name);
+  if (!name) return fail("bad_request", "Name is empty after normalization", 400);
   try {
     const sb = supabaseServer();
-    const { data, error } = await sb.from("exercises").insert(parsed.data).select().single();
+    const { data, error } = await sb.from("exercises").insert({ ...parsed.data, name }).select().single();
     if (error) {
       if (error.code === "23505") {
-        return fail("duplicate_name", `An exercise named "${parsed.data.name}" already exists`, 409);
+        return fail("duplicate_name", `An exercise named "${name}" already exists`, 409);
       }
       return fail("db_error", error.message, 500);
     }

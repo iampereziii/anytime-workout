@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:lan": "powershell -ExecutionPolicy Bypass -File start.ps1",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
-import { toIsoDate } from "@/lib/dates";
+import { isoDateDaysAgo, toIsoDate } from "@/lib/dates";
 import { cacheExercises, enqueueLogWrite, flushQueue, getCachedExercises, getQueue } from "@/lib/offline";
 import type { LogRequest } from "@/lib/validators";
 import { Button } from "@/components/ui/button";
 import { ExerciseCombobox } from "@/components/log/ExerciseCombobox";
 import { FreeTextLog } from "@/components/log/FreeTextLog";
+import type { CreateOpts } from "@/components/log/CreateFields";
 import type { PendingEntry } from "@/components/log/types";
 import { cn } from "@/lib/utils";
 import type { Exercise, SessionPart } from "@/types/db";
@@ -38,11 +39,13 @@ export default function LogPage() {
   const [online, setOnline] = useState(true);
   const [door, setDoor] = useState<Door>("pick");
   const [part, setPart] = useState<SessionPart>(null);
+  // Backdate window (feature brief: change-log-date): today back to today − 7.
+  const [logDate, setLogDate] = useState(() => toIsoDate(new Date()));
   const [quick, setQuick] = useState<QuickEntry | null>(null);
   const [pending, setPending] = useState<PendingEntry[]>([]);
   const [queued, setQueued] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "warn" | "error"; text: string; prs?: string[] } | null>(null);
 
   const syncQueue = useCallback(async () => {
     const { synced, remaining } = await flushQueue(async (payload) => {
@@ -89,9 +92,9 @@ export default function LogPage() {
   }, [syncQueue]);
 
   /** Create a canonical exercise — only reachable AFTER the did-you-mean confirm (rule 1). */
-  async function createExercise(name: string): Promise<Exercise | null> {
+  async function createExercise(name: string, opts: CreateOpts): Promise<Exercise | null> {
     try {
-      const { exercise } = await apiPost<{ exercise: Exercise }>("/api/exercises", { name });
+      const { exercise } = await apiPost<{ exercise: Exercise }>("/api/exercises", { name, ...opts });
       const next = [...exercises, exercise].sort((a, b) => a.name.localeCompare(b.name));
       setExercises(next);
       cacheExercises(next);
@@ -121,10 +124,16 @@ export default function LogPage() {
 
   async function save() {
     if (pending.length === 0) return;
+    const today = toIsoDate(new Date());
+    // Belt-and-braces for the input's min/max: reject outside the 7-day window.
+    if (logDate > today || logDate < isoDateDaysAgo(7)) {
+      setNotice({ kind: "error", text: "Log date must be within the last 7 days." });
+      return;
+    }
     setSaving(true);
     setNotice(null);
     const payload: LogRequest = {
-      date: toIsoDate(new Date()),
+      date: logDate,
       part,
       notes: null,
       sets: pending.flatMap((entry) =>
@@ -137,9 +146,30 @@ export default function LogPage() {
       ),
     };
     try {
-      await apiPost("/api/log", payload);
+      const { new_prs } = await apiPost<{
+        session_id: string;
+        set_count: number;
+        new_prs: {
+          exercise_name: string;
+          reps: number;
+          weight: number | null;
+          unit: "reps" | "seconds" | "minutes";
+          is_bodyweight: boolean;
+          previous: { reps: number; weight: number | null };
+        }[];
+      }>("/api/log", payload);
       setPending([]);
-      setNotice({ kind: "ok", text: "Workout saved ✓" });
+      if (new_prs.length > 0) {
+        // Computed server-side in lib/facts — the UI only formats (rule 4).
+        const prs = new_prs.map((pr) => {
+          const suffix = pr.unit === "reps" ? "" : pr.unit === "seconds" ? "s" : "min";
+          const load = (w: number | null) => (w != null ? ` @ ${pr.is_bodyweight ? "BW +" : ""}${w} lbs` : "");
+          return `${pr.exercise_name}: ${pr.reps}${suffix}${load(pr.weight)} (prev ${pr.previous.reps}${suffix}${load(pr.previous.weight)})`;
+        });
+        setNotice({ kind: "ok", text: `New PR${new_prs.length > 1 ? "s" : ""}! 🎉`, prs });
+      } else {
+        setNotice({ kind: "ok", text: "Workout saved ✓" });
+      }
     } catch {
       enqueueLogWrite(payload);
       setQueued(getQueue().length);
@@ -170,19 +200,27 @@ export default function LogPage() {
         </p>
       )}
       {notice && (
-        <p
+        <div
           className={cn(
             "rounded-lg px-3 py-2 text-sm",
             notice.kind === "ok" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
             notice.kind === "warn" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
             notice.kind === "error" && "bg-red-500/10 text-red-600 dark:text-red-400",
+            notice.prs && "border border-emerald-500/40 font-medium",
           )}
         >
           {notice.text}
-        </p>
+          {notice.prs && (
+            <ul className="mt-1 list-inside list-disc font-normal">
+              {notice.prs.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
 
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="text-zinc-500">Session:</span>
         {([null, "am", "pm"] as SessionPart[]).map((p) => (
           <button
@@ -196,6 +234,20 @@ export default function LogPage() {
             {p === null ? "Single" : p.toUpperCase()}
           </button>
         ))}
+        <span className="ml-2 text-zinc-500">Date:</span>
+        <input
+          type="date"
+          value={logDate}
+          min={isoDateDaysAgo(7)}
+          max={toIsoDate(new Date())}
+          onChange={(e) => setLogDate(e.target.value)}
+          className={cn(
+            "rounded-lg border px-2 py-1",
+            logDate === toIsoDate(new Date())
+              ? "border-zinc-300 dark:border-zinc-700"
+              : "border-amber-500 text-amber-700 dark:text-amber-400",
+          )}
+        />
       </div>
 
       <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
@@ -300,7 +352,11 @@ export default function LogPage() {
             </div>
           ))}
           <Button onClick={() => void save()} disabled={saving} className="mt-1">
-            {saving ? "Saving…" : `Confirm & save ${pending.length} exercise${pending.length === 1 ? "" : "s"}`}
+            {saving
+              ? "Saving…"
+              : `Confirm & save ${pending.length} exercise${pending.length === 1 ? "" : "s"}${
+                  logDate === toIsoDate(new Date()) ? "" : ` — for ${logDate}`
+                }`}
           </Button>
         </section>
       )}
