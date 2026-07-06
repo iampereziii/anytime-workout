@@ -62,6 +62,14 @@ describe("recommendationSystemPrompt", () => {
     expect(p).toContain("guardrail");
   });
 
+  it("picks freshness-first — least-recently-trained focus wins over the calendar plan (ADR-0006)", () => {
+    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    expect(p).toContain("FRESHNESS FIRST");
+    expect(p).toContain("LEAST-recently trained");
+    // The plan no longer anchors — it only breaks ties.
+    expect(p.toLowerCase()).toContain("does not anchor");
+  });
+
   it("forbids recomputing the facts (ADR-0004)", () => {
     expect(recommendationSystemPrompt(facts, focuses, "Rest")).toContain("GROUND TRUTH");
   });

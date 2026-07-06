@@ -6,28 +6,30 @@
 begin;
 
 -- ---------- canonical exercises ----------
--- muscle_groups (col added in migration 0002): primary + secondary; empty = cardio/none.
--- Feeds app-computed per-muscle-group recency (adaptive-readjustment feature, Risk #1).
+-- muscle_groups: fixed TWO-LEVEL vocabulary (migration 0004) — sub-groups roll up
+-- to the 10 parents in-app; muscles without a meaningful sub-division stay at the
+-- parent level; empty = cardio/none. Feeds app-computed per-muscle-group + per-focus
+-- recency (recency-first feature). Source of truth: src/lib/muscle-groups.ts.
 insert into exercises (name, aliases, is_bodyweight, unit, muscle_groups) values
-  ('Incline Push-up',       array['incline pushup','elevated push-up','elevated pushup'], true,  'reps',    array['chest','triceps','shoulders']),
-  ('Push-up',               array['pushup','regular push-up'],                            true,  'reps',    array['chest','triceps','shoulders']),
-  ('Pull-up',               array['pullup'],                                              true,  'reps',    array['back','biceps']),
-  ('Chin-up',               array['chinup'],                                              true,  'reps',    array['back','biceps']),
-  ('Barbell Row',           array['bb row'],                                              false, 'reps',    array['back','biceps']),
-  ('Overhead Press',        array['OHP'],                                                 false, 'reps',    array['shoulders','triceps']),
-  ('DB Shoulder Press',     array['dumbbell shoulder press'],                             false, 'reps',    array['shoulders','triceps']),
-  ('Lateral Raise',         array['lateral raises'],                                      false, 'reps',    array['shoulders']),
+  ('Incline Push-up',       array['incline pushup','elevated push-up','elevated pushup'], true,  'reps',    array['chest_upper','triceps','shoulders_front']),
+  ('Push-up',               array['pushup','regular push-up'],                            true,  'reps',    array['chest_mid','triceps','shoulders_front']),
+  ('Pull-up',               array['pullup'],                                              true,  'reps',    array['back_lats','biceps']),
+  ('Chin-up',               array['chinup'],                                              true,  'reps',    array['back_lats','biceps']),
+  ('Barbell Row',           array['bb row'],                                              false, 'reps',    array['back_upper','biceps']),
+  ('Overhead Press',        array['OHP'],                                                 false, 'reps',    array['shoulders_front','triceps']),
+  ('DB Shoulder Press',     array['dumbbell shoulder press'],                             false, 'reps',    array['shoulders_front','triceps']),
+  ('Lateral Raise',         array['lateral raises'],                                      false, 'reps',    array['shoulders_side']),
   ('Plank',                 array[]::text[],                                              true,  'seconds', array['core']),
-  ('Hanging Leg Raise',     array[]::text[],                                              true,  'reps',    array['core']),
+  ('Hanging Leg Raise',     array[]::text[],                                              true,  'reps',    array['core_lower']),
   ('Squat',                 array['squats'],                                              false, 'reps',    array['quads','glutes']),
-  ('Romanian Deadlift',     array['RDL','romanian dead lift'],                            false, 'reps',    array['hamstrings','glutes','back']),
-  ('Deadlift',              array[]::text[],                                              false, 'reps',    array['back','hamstrings','glutes']),
+  ('Romanian Deadlift',     array['RDL','romanian dead lift'],                            false, 'reps',    array['hamstrings','glutes','back_lower']),
+  ('Deadlift',              array[]::text[],                                              false, 'reps',    array['back_lower','hamstrings','glutes']),
   ('Lunge',                 array['lunges'],                                              false, 'reps',    array['quads','glutes']),
   ('Step-up',               array['step ups'],                                            false, 'reps',    array['quads','glutes']),
   ('Calf Raise',            array['calf raises'],                                         true,  'reps',    array['calves']),
   ('Barbell Curl',          array['bb curl'],                                             false, 'reps',    array['biceps']),
-  ('Tricep Dip',            array['dips'],                                                true,  'reps',    array['triceps','chest']),
-  ('Floor Press',           array['floor press'],                                         false, 'reps',    array['chest','triceps']),
+  ('Tricep Dip',            array['dips'],                                                true,  'reps',    array['triceps','chest_lower']),
+  ('Floor Press',           array['floor press'],                                         false, 'reps',    array['chest_mid','triceps','shoulders_front']),
   ('Jump Squat',            array['jump squats'],                                         true,  'reps',    array['quads','glutes']),
   ('Walk / Mobility',       array['walk','mobility'],                                     true,  'minutes', array[]::text[]),
   ('Conditioning Intervals',array['intervals'],                                           true,  'minutes', array[]::text[])

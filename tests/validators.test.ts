@@ -40,13 +40,29 @@ describe("LogRequestSchema", () => {
 });
 
 describe("ExerciseCreateSchema", () => {
-  it("defaults aliases/is_bodyweight/unit", () => {
+  it("defaults aliases/is_bodyweight/unit/muscle_groups", () => {
     const parsed = ExerciseCreateSchema.parse({ name: "Face Pull" });
-    expect(parsed).toEqual({ name: "Face Pull", aliases: [], is_bodyweight: false, unit: "reps" });
+    expect(parsed).toEqual({ name: "Face Pull", aliases: [], is_bodyweight: false, unit: "reps", muscle_groups: [] });
   });
 
   it("trims and rejects an empty name", () => {
     expect(ExerciseCreateSchema.safeParse({ name: "   " }).success).toBe(false);
+  });
+
+  it("accepts valid two-level muscle-group tags (parent + sub-group mix)", () => {
+    const parsed = ExerciseCreateSchema.parse({
+      name: "Diamond Push-up",
+      muscle_groups: ["triceps", "chest_mid", "shoulders_front"],
+    });
+    expect(parsed.muscle_groups).toEqual(["triceps", "chest_mid", "shoulders_front"]);
+  });
+
+  it("rejects a free-text muscle group outside the fixed vocabulary (Risk #3 enforcement)", () => {
+    expect(ExerciseCreateSchema.safeParse({ name: "Face Pull", muscle_groups: ["rear-delts"] }).success).toBe(false);
+  });
+
+  it("allows empty muscle_groups (cardio/mobility)", () => {
+    expect(ExerciseCreateSchema.parse({ name: "Jog", muscle_groups: [] }).muscle_groups).toEqual([]);
   });
 });
 

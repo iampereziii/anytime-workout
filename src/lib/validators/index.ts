@@ -1,14 +1,23 @@
 import { z } from "zod";
+import { MUSCLE_GROUP_VOCABULARY } from "@/lib/muscle-groups";
 
 /** Zod input schemas for every API route — parse at the boundary, trust nothing. */
 
 export const ExerciseUnitSchema = z.enum(["reps", "seconds", "minutes"]);
+
+/** A single muscle-group tag — constrained to the fixed two-level vocabulary
+ *  (recency-first brief, Risk #3). The column is unconstrained text[], so THIS
+ *  is the enforcement point: no free-text groups reach the DB. */
+export const MuscleGroupSchema = z.enum(MUSCLE_GROUP_VOCABULARY as [string, ...string[]]);
 
 export const ExerciseCreateSchema = z.object({
   name: z.string().trim().min(1).max(80),
   aliases: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
   is_bodyweight: z.boolean().default(false),
   unit: ExerciseUnitSchema.default("reps"),
+  /** Two-level muscle-group tags so a new exercise is recency-visible at birth
+   *  (recency-first brief). Empty is allowed (cardio/mobility). De-duplicated. */
+  muscle_groups: z.array(MuscleGroupSchema).max(12).default([]),
 });
 export type ExerciseCreate = z.infer<typeof ExerciseCreateSchema>;
 

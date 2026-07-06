@@ -9,6 +9,7 @@
  * at the owner's request — flagged for a teach-mode revisit.
  */
 
+import { withParents } from "@/lib/muscle-groups";
 import type { Exercise, LoggedSet, PlannedExercise, PrBest, WorkoutSession } from "@/types/db";
 
 /** Local-midnight Date from an ISO date string (yyyy-mm-dd) — date-only semantics. */
@@ -48,6 +49,11 @@ export interface MuscleGroupRecency {
  * sessions each carrying the union of muscle groups trained that day, return the
  * days since each group was last worked, soonest-trained first.
  *
+ * Two-level roll-up (recency-first brief, AC #2): each session's tags are
+ * expanded with their parents (`withParents`) before folding, so training a
+ * sub-group (`chest_upper`) also refreshes its parent (`chest`). Recency is
+ * therefore reported at BOTH levels — a coarse hit never goes blind.
+ *
  * Sessions may arrive unsorted; the most recent date per group wins. Groups never
  * trained in the window simply don't appear.
  */
@@ -58,7 +64,7 @@ export function muscleGroupRecency(
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const latest = new Map<string, string>(); // muscle group -> most recent ISO date
   for (const s of sessions) {
-    for (const g of s.muscle_groups) {
+    for (const g of withParents(s.muscle_groups)) {
       const cur = latest.get(g);
       if (!cur || s.date > cur) latest.set(g, s.date); // ISO dates compare lexicographically
     }
@@ -71,6 +77,75 @@ export function muscleGroupRecency(
       days_since: Math.round((todayMid.getTime() - atLocalMidnight(date).getTime()) / 86_400_000),
     }))
     .sort((a, b) => a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group));
+}
+
+export interface FocusGroupRecency {
+  muscle_group: string;
+  /** Days since this group was last trained; null = not trained in the recency window (cold). */
+  days_since: number | null;
+}
+
+export interface FocusRecency {
+  label: string;
+  /** This focus's muscle groups at BOTH levels (sub-groups + rolled-up parents),
+   *  soonest-trained first, cold groups last. */
+  groups: FocusGroupRecency[];
+  /** Min days-since among this focus's trained groups — how recently ANY muscle it
+   *  hits was worked. Higher = staler focus = better pick. null = none of its groups
+   *  were trained in the window (fully cold). */
+  freshest_overlap_days: number | null;
+}
+
+/**
+ * Per-focus overlap facts (recency-first brief). For each program-day LABEL,
+ * take the union of muscle groups its planned lifts train, expand to both levels
+ * (`withParents`), and attach each group's computed days-since from
+ * `muscleGroupRecency`. `freshest_overlap_days` is the min days-since among the
+ * trained groups — the freshness-first signal the model picks on (larger = the
+ * focus's muscles are all colder = the better call). This is the fact ADR-0004
+ * says must be computed, not left to the model to infer from a label like
+ * "Full Body — Power Day".
+ *
+ * Days that repeat a label are unioned (one focus = one row). An all-cardio /
+ * untagged day contributes no groups and yields `freshest_overlap_days: null`
+ * (fully cold) without crashing.
+ */
+export function focusRecency(
+  days: { label: string; muscle_groups: string[] }[],
+  recency: MuscleGroupRecency[],
+): FocusRecency[] {
+  const daysSinceByGroup = new Map(recency.map((r) => [r.muscle_group, r.days_since]));
+
+  // Union each label's groups across day_numbers, preserving first-seen order.
+  const order: string[] = [];
+  const byLabel = new Map<string, Set<string>>();
+  for (const d of days) {
+    let set = byLabel.get(d.label);
+    if (!set) {
+      set = new Set<string>();
+      byLabel.set(d.label, set);
+      order.push(d.label);
+    }
+    for (const g of withParents(d.muscle_groups)) set.add(g);
+  }
+
+  return order.map((label) => {
+    const groups: FocusGroupRecency[] = [...byLabel.get(label)!]
+      .map((g) => ({ muscle_group: g, days_since: daysSinceByGroup.get(g) ?? null }))
+      // soonest-trained first; cold (null) sinks to the bottom; ties alphabetical.
+      .sort((a, b) => {
+        if (a.days_since === null && b.days_since === null) return a.muscle_group.localeCompare(b.muscle_group);
+        if (a.days_since === null) return 1;
+        if (b.days_since === null) return -1;
+        return a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group);
+      });
+    const trained = groups.filter((g) => g.days_since !== null).map((g) => g.days_since as number);
+    return {
+      label,
+      groups,
+      freshest_overlap_days: trained.length ? Math.min(...trained) : null,
+    };
+  });
 }
 
 /**

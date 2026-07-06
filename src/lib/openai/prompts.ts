@@ -40,6 +40,14 @@ export interface FactsMuscleRecencyLine {
   days_since: number;
 }
 
+export interface FactsFocusRecencyLine {
+  label: string;
+  /** Both levels (sub-groups + rolled-up parents), soonest-trained first. */
+  groups: { muscle_group: string; days_since: number | null }[];
+  /** Min days-since among trained groups; null = fully cold. Higher = staler = better pick. */
+  freshest_overlap_days: number | null;
+}
+
 export interface FactsEquipment {
   name: string;
   items: string[];
@@ -58,6 +66,9 @@ export interface FactsBlockInput {
   next_pr_targets: FactsNextTargetLine[];
   history_summary: string; // preformatted, most recent first
   muscle_recency: FactsMuscleRecencyLine[]; // computed per-group recency (adaptive readjustment)
+  focus_recency?: FactsFocusRecencyLine[]; // per-focus overlap facts — shared by card AND chat so both reason from the same ground truth
+  /** Today's cached card suggestion — injected into chat so it can't contradict the home screen. */
+  card_suggestion?: { headline: string; reason: string } | null;
   equipment: FactsEquipment | null; // active equipment profile, or null
 }
 
@@ -118,6 +129,23 @@ export function buildFactsBlock(f: FactsBlockInput): string {
       lines.push(`- ${m.muscle_group}: ${when}`);
     }
   }
+  if (f.focus_recency && f.focus_recency.length > 0) {
+    lines.push(
+      "Focus options — each program day's muscle groups (computed union of its planned lifts, both levels) and days since last trained:",
+    );
+    for (const fo of f.focus_recency) {
+      const groups = fo.groups.length
+        ? fo.groups.map((g) => `${g.muscle_group} ${g.days_since === null ? "cold" : `${g.days_since}d`}`).join(", ")
+        : "no tagged muscle groups";
+      const freshest = fo.freshest_overlap_days === null ? "all cold" : `${fo.freshest_overlap_days}d`;
+      lines.push(`- ${fo.label} → ${groups} | freshest-trained group: ${freshest}`);
+    }
+  }
+  if (f.card_suggestion) {
+    lines.push(
+      `Today's card suggestion (already on the home screen, same facts): "${f.card_suggestion.headline}" — ${f.card_suggestion.reason}`,
+    );
+  }
   if (f.history_summary) {
     lines.push("Recent sessions (most recent first):");
     lines.push(f.history_summary);
@@ -172,11 +200,12 @@ export function chatSystemPrompt(factsBlock: string): string {
     "2. If detraining mode is YES: ease back in — reduced volume/intensity, no PR attempts, no PR-target talk.",
     "3. If there is no workout history (first run): give a sensible generic answer for the question and explicitly suggest logging today's session to start building history.",
     "4. Weight semantics: for bodyweight movements, weights are ADDED load (\"BW +10\" = bodyweight plus 10 lbs). For BARBELL lifts, weight is the load PER SIDE (e.g. Squat 17.5 = 17.5 lbs per side); \"+2.5 lbs\" progression means per side (+5 lbs total). For DUMBBELL lifts, weight is PER HAND.",
-    "5. The weekly program is a BASELINE, not a contract. ADAPT today's recommendation when the facts give a reason: (a) if a muscle group in today's plan was trained recently (see recency facts), reduce its volume, swap to a different movement, reorder, or suggest recovery — don't blindly re-prescribe it; (b) if the active equipment can't do a planned lift, substitute an equivalent the available equipment supports. Name the trigger when you deviate (e.g. \"chest was hit 2 days ago, so…\").",
-    "6. GUARDRAIL: when nothing overlapping was trained recently AND the available equipment matches the plan, follow the plan as written — don't improvise for its own sake.",
-    "7. Equipment: only prescribe movements the active equipment profile supports; never assume equipment that isn't listed. If the user states a different location/equipment in their question, that overrides the active profile for this answer.",
-    "8. Keep answers tight and practical — this is read on a phone, mid-workout. Plain text only: short paragraphs and dash lists; no markdown headers or tables.",
-    "9. When recommending work, give exercise / sets × reps / weight / rest, plus a short cue when useful.",
+    "5. FRESHNESS FIRST. The weekly program is a BASELINE, not a contract — the owner treats it as a PR record to beat, not a prescription. Lead with what's RECOVERED: steer today toward the muscle groups that are least-recently trained (see the recency facts) and away from anything trained in the last ~2 days, even when the calendar plan says otherwise. Missed days and off-plan sessions are normal — detect them and name the stalest groups (e.g. \"you haven't hit legs in a week\"). Recommend, never force. If the active equipment can't do a lift, substitute an equivalent it supports. Name the trigger whenever you diverge from the plan (e.g. \"chest was hit 2 days ago, so legs today\").",
+    "6. GUARDRAIL: freshness-first is not change for its own sake. When nothing in the plan overlaps recently trained groups AND the available equipment matches, the plan already IS the freshest call — follow it as written; the calendar breaks the tie. BUT when EVERY focus's muscle groups were trained less than ~2 days ago (see the per-focus facts — nothing is recovered), the answer is rest or active recovery, NEVER the overlapping plan: \"no fresher alternative\" is a reason to recover, not a license to hit the most-recently-trained muscles.",
+    "7. CARD CONSISTENCY: when the facts include today's card suggestion, it was composed from these same facts — do not contradict its focus or its rest call. Diverge only when the user's question changes the constraints (different equipment/location, pain, time budget), and name why you're diverging.",
+    "8. Equipment: only prescribe movements the active equipment profile supports; never assume equipment that isn't listed. If the user states a different location/equipment in their question, that overrides the active profile for this answer.",
+    "9. Keep answers tight and practical — this is read on a phone, mid-workout. Plain text only: short paragraphs and dash lists; no markdown headers or tables.",
+    "10. When recommending work, give exercise / sets × reps / weight / rest, plus a short cue when useful.",
     "",
     factsBlock,
   ].join("\n");
@@ -199,14 +228,14 @@ export function recommendationSystemPrompt(
   return [
     "You are the owner's strength coach, composing the ONE-LINE suggestion on the app's home screen — the first thing they see when they open the app.",
     "",
-    "YOUR JOB: pick today's suggested focus from the allowed list, then write a short headline and a one-line reason. Output only the schema fields.",
+    "YOUR JOB: pick today's suggested focus from the allowed list — the one whose muscle groups are FRESHEST (least-recently trained) per the computed facts — then write a short headline and a one-line reason. Output only the schema fields.",
     `ALLOWED suggested_focus values (pick exactly one, verbatim): ${allowedFocuses.join(" | ")}`,
     calendarLabel ? `The calendar plan for today is: "${calendarLabel}".` : "Today's calendar plan has no lifting label (recovery/rest).",
     "",
     "NON-NEGOTIABLE RULES:",
     "1. The FACTS block below is computed by the app and is GROUND TRUTH. Never recompute or contradict any date, day-gap, remaining-set count, PR target, or muscle-group recency. Every number in your reason must come from the facts — cite the actual figures (e.g. \"push yesterday; back/biceps 4 days cold\"), never invented ones.",
-    "2. The weekly program is a BASELINE, not a contract (ADR-0005). Deviate from the calendar plan ONLY when the facts give a computed reason: a muscle group in today's plan was trained recently (see recency facts), so the least-recently-trained complementary focus is the better call. When you deviate, name the trigger in the reason.",
-    "3. GUARDRAIL: if nothing overlapping the calendar plan was trained recently, recommend the planned focus AS WRITTEN — including a rest day, phrased as a reasoned recommendation (e.g. \"Rest is right: push yesterday, legs 2 days ago\"), never improvised change for its own sake.",
+    "2. PICK FRESHNESS FIRST. The weekly program is a BASELINE, not a contract (ADR-0005/0006) — the owner treats it as a PR record to beat, not a prescription. Choose the focus whose muscle groups are LEAST-recently trained, reading the per-focus \"freshest-trained group\" facts: prefer the focus with the LARGEST freshest-trained-group figure (its muscles are all coldest); \"all cold\" beats any number. The calendar plan does NOT anchor the pick — it breaks ties and supplies the day's structure and PR targets. HARD RULE: never pick a focus whose muscle groups were ALL trained less than 2 days ago when a fresher focus exists. When your pick differs from the calendar plan, name the trigger in the reason (e.g. \"push yesterday, so pull — back/biceps 4 days cold\").",
+    "3. GUARDRAIL: when no focus clearly overlaps recent work — every focus is comparably fresh, or fully cold (e.g. first run) — recommend the calendar plan AS WRITTEN, including a rest day, phrased as a reasoned recommendation (e.g. \"Rest is right: everything's had 3+ days\"). The plan breaks the tie; don't divert for its own sake.",
     "4. If detraining mode is YES: this is a hard rule — recommend easing back in, no PR chasing, regardless of the focus picked.",
     "5. headline: one short line, e.g. \"Suggested: Pull\" or \"Rest is right\". reason: one line, the computed why. No markdown, no lists — this renders as two small lines on a phone card.",
     "6. suggested_focus MUST be one of the allowed values exactly; it drives which planned lifts the card shows.",

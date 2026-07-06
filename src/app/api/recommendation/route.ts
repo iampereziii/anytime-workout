@@ -7,7 +7,7 @@ import {
   recommendationSystemPrompt,
 } from "@/lib/openai/prompts";
 import { todayRecommendationSchema } from "@/lib/openai/schemas";
-import { recommendationFingerprint } from "@/lib/facts";
+import { focusRecency, recommendationFingerprint } from "@/lib/facts";
 import { getRecommendationContext, type ProgramDayCatalogEntry } from "@/lib/supabase/queries";
 import { supabaseServer } from "@/lib/supabase/server";
 import { ok } from "@/lib/http";
@@ -82,6 +82,11 @@ export async function GET() {
     const calendarLabel = base.day?.label ?? null;
     const plannedById = new Map(base.planned.map((p) => [p.id, p]));
 
+    // Per-focus overlap facts (recency-first brief): each focus's muscle groups +
+    // days-since, computed here (ADR-0004), so the model never infers overlap from
+    // an opaque label like "Full Body — Power Day".
+    const focus_recency = focusRecency(ctx.program_days, ctx.muscle_recency);
+
     const factsBlock = buildFactsBlock({
       today: base.today,
       day_number: base.day_number,
@@ -108,6 +113,7 @@ export async function GET() {
       next_pr_targets: [],
       history_summary: formatHistorySummary(ctx.history),
       muscle_recency: ctx.muscle_recency.map((m) => ({ muscle_group: m.muscle_group, days_since: m.days_since })),
+      focus_recency,
       equipment: null,
     });
 
@@ -137,10 +143,13 @@ export async function GET() {
     };
 
     // Cache the composition (best-effort — a cache-write failure must not fail the
-    // response; worst case is one extra model call next load).
+    // response; worst case is one extra model call next load). The rendered facts
+    // block is stored alongside the payload (recency-first brief, Risk #5): a
+    // wrong-feeling suggestion is then auditable from the row alone, not
+    // unreproducible after the underlying facts have moved on.
     await sb
       .from("daily_recommendations")
-      .upsert({ rec_date: base.today, fingerprint, payload }, { onConflict: "fingerprint" });
+      .upsert({ rec_date: base.today, fingerprint, payload, facts_block: factsBlock }, { onConflict: "fingerprint" });
 
     return ok({ recommendation: payload });
   } catch {

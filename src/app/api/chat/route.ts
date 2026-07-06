@@ -1,4 +1,5 @@
 import { openai } from "@/lib/openai/client";
+import { focusRecency } from "@/lib/facts";
 import { RECOMMENDATION_MODEL } from "@/lib/openai/models";
 import { buildFactsBlock, chatSystemPrompt, formatHistorySummary } from "@/lib/openai/prompts";
 import { getChatContext } from "@/lib/supabase/queries";
@@ -75,6 +76,11 @@ export async function POST(req: Request) {
         muscle_group: m.muscle_group,
         days_since: m.days_since,
       })),
+      // Same per-focus overlap facts the card picks on + the card's own suggestion
+      // (recency-first brief): card and chat reason from shared ground truth, so
+      // they can't disagree on plan-vs-freshness for the same facts (AC #7).
+      focus_recency: focusRecency(ctx.program_days, ctx.muscle_recency),
+      card_suggestion: ctx.card_suggestion,
       equipment: ctx.equipment,
     });
 

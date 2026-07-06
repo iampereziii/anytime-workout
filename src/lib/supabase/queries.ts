@@ -6,6 +6,7 @@ import {
   isDetraining,
   muscleGroupRecency,
   nextPrTargets,
+  recommendationFingerprint,
   remainingToday,
   type MuscleGroupRecency,
   type RemainingExercise,
@@ -122,6 +123,12 @@ export interface ChatContext extends TodayContext {
   muscle_recency: MuscleGroupRecency[];
   /** The active equipment profile — context for equipment-aware adaptation (null if none). */
   equipment: ActiveEquipment | null;
+  /** Program-day labels + muscle-group unions — feeds focusRecency so chat shares
+   *  the card's per-focus overlap facts (card/chat consistency, recency-first brief). */
+  program_days: Pick<ProgramDayCatalogEntry, "label" | "muscle_groups">[];
+  /** Today's cached card suggestion for the CURRENT fingerprint, or null if none
+   *  has been composed yet — injected into chat so it can't contradict the card. */
+  card_suggestion: { headline: string; reason: string } | null;
 }
 
 export interface SuggestedLift {
@@ -138,6 +145,9 @@ export interface ProgramDayCatalogEntry {
   label: string;
   notes: string | null;
   planned: SuggestedLift[];
+  /** Union of muscle groups this day's planned lifts train (as-tagged; roll-up to
+   *  parents happens in lib/facts). Feeds per-focus overlap facts (ADR-0004). */
+  muscle_groups: string[];
 }
 
 export interface RecommendationContext {
@@ -177,7 +187,7 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
     sb
       .from("program_days")
       .select(
-        "day_number, label, notes, programs!inner(is_active), planned_exercises(target_sets, target_reps, target_weight, sort_order, exercise:exercises(name, unit))",
+        "day_number, label, notes, programs!inner(is_active), planned_exercises(target_sets, target_reps, target_weight, sort_order, exercise:exercises(name, unit, muscle_groups))",
       )
       .eq("programs.is_active", true)
       .order("day_number"),
@@ -228,7 +238,7 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
       target_reps: number | null;
       target_weight: number | null;
       sort_order: number;
-      exercise: { name: string; unit: string } | null;
+      exercise: { name: string; unit: string; muscle_groups: string[] } | null;
     }[];
   };
   const program_days: ProgramDayCatalogEntry[] = ((days ?? []) as unknown as DayRow[]).map((d) => ({
@@ -246,6 +256,8 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
         sort_order: p.sort_order,
       }))
       .sort((a, b) => a.sort_order - b.sort_order),
+    // Union over the day's planned lifts (as-tagged; lib/facts rolls up to parents).
+    muscle_groups: [...new Set(d.planned_exercises.flatMap((p) => p.exercise?.muscle_groups ?? []))],
   }));
 
   return {
@@ -266,6 +278,8 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
     { data: exercises, error: exErr },
     { data: sessions, error: sessErr },
     { data: activeProfile, error: equipErr },
+    { data: days, error: daysErr },
+    { data: latest, error: latestErr },
   ] = await Promise.all([
     sb.from("pr_bests").select("*"),
     sb.from("exercises").select("*"),
@@ -275,11 +289,39 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
       .order("date", { ascending: false })
       .limit(10),
     sb.from("equipment_profiles").select("name, items").eq("is_active", true).maybeSingle(),
+    sb
+      .from("program_days")
+      .select("label, programs!inner(is_active), planned_exercises(exercise:exercises(muscle_groups))")
+      .eq("programs.is_active", true)
+      .order("day_number"),
+    sb.from("workout_sessions").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
   throwIf(bestsErr);
   throwIf(exErr);
   throwIf(sessErr);
   throwIf(equipErr);
+  throwIf(daysErr);
+  throwIf(latestErr);
+
+  // The card the owner is looking at right now = the cache row for the CURRENT
+  // fingerprint (same key /api/recommendation reads). Absent row → no card yet;
+  // chat just goes without it. Best-effort: a read failure must not break chat.
+  const fingerprint = recommendationFingerprint(base.today, latest?.id ?? null);
+  const { data: cachedCard } = await sb
+    .from("daily_recommendations")
+    .select("payload")
+    .eq("fingerprint", fingerprint)
+    .maybeSingle();
+  const cardPayload = (cachedCard?.payload ?? null) as { headline?: string; reason?: string } | null;
+  const card_suggestion =
+    cardPayload?.headline && cardPayload?.reason ? { headline: cardPayload.headline, reason: cardPayload.reason } : null;
+
+  type ChatDayRow = { label: string; planned_exercises: { exercise: { muscle_groups: string[] } | null }[] };
+  const program_days = ((days ?? []) as unknown as ChatDayRow[]).map((d) => ({
+    label: d.label,
+    // Union over the day's planned lifts (as-tagged; lib/facts rolls up to parents).
+    muscle_groups: [...new Set(d.planned_exercises.flatMap((p) => p.exercise?.muscle_groups ?? []))],
+  }));
 
   type SessionRow = {
     id: string;
@@ -325,5 +367,7 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
     recent_sessions,
     muscle_recency: muscleGroupRecency(recencySessions, now),
     equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
+    program_days,
+    card_suggestion,
   };
 }

@@ -117,6 +117,51 @@ describe("buildFactsBlock (rule 4 — every number is computed, none inferred)",
     expect(block).not.toContain("Recently trained (by muscle group");
   });
 
+  it("renders per-focus overlap facts at both levels + freshest-trained group (recency-first)", () => {
+    const block = buildFactsBlock({
+      ...base,
+      focus_recency: [
+        {
+          label: "Upper — Chest + Back",
+          groups: [
+            { muscle_group: "chest", days_since: 1 },
+            { muscle_group: "chest_mid", days_since: 1 },
+            { muscle_group: "back_lats", days_since: null },
+          ],
+          freshest_overlap_days: 1,
+        },
+        { label: "Lower Body", groups: [{ muscle_group: "quads", days_since: 6 }], freshest_overlap_days: 6 },
+      ],
+    });
+    expect(block).toContain("Focus options");
+    expect(block).toContain("Upper — Chest + Back → chest 1d, chest_mid 1d, back_lats cold | freshest-trained group: 1d");
+    expect(block).toContain("Lower Body → quads 6d | freshest-trained group: 6d");
+  });
+
+  it("renders a fully-cold focus as 'all cold' (first run / never trained)", () => {
+    const block = buildFactsBlock({
+      ...base,
+      focus_recency: [{ label: "Rest", groups: [], freshest_overlap_days: null }],
+    });
+    expect(block).toContain("Rest → no tagged muscle groups | freshest-trained group: all cold");
+  });
+
+  it("omits the focus-options section entirely when there is none", () => {
+    expect(buildFactsBlock(base)).not.toContain("Focus options");
+  });
+
+  it("renders today's card suggestion so chat sees what the home screen says (card/chat consistency)", () => {
+    const block = buildFactsBlock({
+      ...base,
+      card_suggestion: { headline: "Suggested: Recovery", reason: "Lower body is only 1 day cold" },
+    });
+    expect(block).toContain('Today\'s card suggestion (already on the home screen, same facts): "Suggested: Recovery" — Lower body is only 1 day cold');
+  });
+
+  it("omits the card-suggestion line when no card has been composed yet", () => {
+    expect(buildFactsBlock({ ...base, card_suggestion: null })).not.toContain("card suggestion");
+  });
+
   it("lists the active equipment profile and its items", () => {
     const block = buildFactsBlock({
       ...base,
@@ -138,8 +183,26 @@ describe("chatSystemPrompt (adaptive readjustment rules)", () => {
     expect(chatSystemPrompt(block)).toContain("BASELINE, not a contract");
   });
 
+  it("leads freshness-first, matching the card (card and chat agree on plan-vs-freshness)", () => {
+    const p = chatSystemPrompt(block);
+    expect(p).toContain("FRESHNESS FIRST");
+    expect(p).toContain("least-recently trained");
+  });
+
   it("carries the guardrail: follow the plan when nothing triggers adaptation", () => {
     expect(chatSystemPrompt(block)).toContain("GUARDRAIL");
+  });
+
+  it("all-fresh means recovery, never the overlapping plan (2026-07-07 chat-contradiction incident)", () => {
+    const p = chatSystemPrompt(block);
+    expect(p).toContain("rest or active recovery, NEVER the overlapping plan");
+    expect(p).toContain("a reason to recover");
+  });
+
+  it("forbids contradicting the card suggestion without a constraint change (AC #7)", () => {
+    const p = chatSystemPrompt(block);
+    expect(p).toContain("CARD CONSISTENCY");
+    expect(p).toContain("do not contradict its focus or its rest call");
   });
 
   it("states the per-side barbell / per-hand dumbbell weight convention", () => {

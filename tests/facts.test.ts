@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   daysSinceLastWorkout,
+  focusRecency,
   isDetraining,
   muscleGroupRecency,
   nextPrTargets,
@@ -140,6 +141,79 @@ describe("muscleGroupRecency", () => {
   it("reports 0 days for a group trained today", () => {
     const result = muscleGroupRecency([{ date: "2026-07-06", muscle_groups: ["quads"] }], today);
     expect(result[0]).toMatchObject({ muscle_group: "quads", days_since: 0 });
+  });
+
+  it("rolls a sub-group hit up to its parent — both levels reported (recency-first AC #2)", () => {
+    const result = muscleGroupRecency([{ date: "2026-07-04", muscle_groups: ["chest_upper"] }], today);
+    // chest_upper trains chest — freshness must read at both levels.
+    expect(result).toEqual([
+      { muscle_group: "chest", days_since: 2, last_trained_on: "2026-07-04" },
+      { muscle_group: "chest_upper", days_since: 2, last_trained_on: "2026-07-04" },
+    ]);
+  });
+});
+
+// ---------- focusRecency (per-focus overlap facts, recency-first brief) ----------
+
+describe("focusRecency", () => {
+  const today = new Date("2026-07-07T09:30:00");
+  // Push-dominant session yesterday (the incident): chest/triceps/shoulders at both levels.
+  const recency = muscleGroupRecency(
+    [
+      { date: "2026-07-06", muscle_groups: ["chest_mid", "triceps", "shoulders_front"] },
+      { date: "2026-07-01", muscle_groups: ["quads", "glutes"] },
+    ],
+    today,
+  );
+
+  it("computes per-focus groups (both levels) + freshest_overlap_days = min days-since", () => {
+    const [upper, lower] = focusRecency(
+      [
+        { label: "Upper — Chest + Back", muscle_groups: ["chest_mid", "triceps", "back_lats"] },
+        { label: "Lower Body", muscle_groups: ["quads", "glutes"] },
+      ],
+      recency,
+    );
+
+    // Upper overlaps yesterday's push (chest/triceps = 1d) but back is cold.
+    expect(upper.freshest_overlap_days).toBe(1);
+    expect(upper.groups).toContainEqual({ muscle_group: "chest", days_since: 1 });
+    expect(upper.groups).toContainEqual({ muscle_group: "chest_mid", days_since: 1 });
+    expect(upper.groups).toContainEqual({ muscle_group: "back_lats", days_since: null }); // cold
+
+    // Lower's freshest muscle is 6 days old → the far staler (better) pick.
+    expect(lower.freshest_overlap_days).toBe(6);
+  });
+
+  it("unions days that repeat a label into one focus row", () => {
+    const result = focusRecency(
+      [
+        { label: "Full Body", muscle_groups: ["chest_mid"] },
+        { label: "Full Body", muscle_groups: ["quads"] },
+      ],
+      recency,
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].groups.map((g) => g.muscle_group)).toEqual(expect.arrayContaining(["chest", "chest_mid", "quads"]));
+  });
+
+  it("a day with an untagged exercise contributes nothing and does not crash", () => {
+    const [focus] = focusRecency([{ label: "Chest", muscle_groups: ["chest_mid", ""] }], recency);
+    // Empty-string tag rolls up to nothing; real tags still count.
+    expect(focus.groups.some((g) => g.muscle_group === "chest_mid")).toBe(true);
+    expect(focus.freshest_overlap_days).toBe(1);
+  });
+
+  it("an all-cardio focus (no groups) is fully cold, not an error", () => {
+    const [focus] = focusRecency([{ label: "Conditioning", muscle_groups: [] }], recency);
+    expect(focus.groups).toEqual([]);
+    expect(focus.freshest_overlap_days).toBeNull();
+  });
+
+  it("a focus whose groups were never trained in the window is fully cold", () => {
+    const [focus] = focusRecency([{ label: "Arms", muscle_groups: ["biceps"] }], recency);
+    expect(focus.freshest_overlap_days).toBeNull();
+    expect(focus.groups).toEqual([{ muscle_group: "biceps", days_since: null }]);
   });
 });
 
