@@ -10,6 +10,7 @@
  */
 
 import { withParents } from "@/lib/muscle-groups";
+import { RECOMMENDATION_PROMPT_VERSION } from "@/lib/openai/prompts";
 import type { Exercise, LoggedSet, PlannedExercise, PrBest, WorkoutSession } from "@/types/db";
 
 /** Local-midnight Date from an ISO date string (yyyy-mm-dd) — date-only semantics. */
@@ -150,14 +151,17 @@ export function focusRecency(
 
 /**
  * Cache key for the Today recommendation (feature brief: ai-today-recommendation,
- * Risk #2). The recommendation is a function of two things that change the facts:
- * the calendar day (rolls at midnight) and the latest logged session (a new log
- * inserts a new workout_sessions row). Fingerprinting both means a new log OR a
- * date rollover is a natural cache miss — no invalidation hook needed. Same
- * fingerprint on a reload → cache hit → zero model calls (AC #4).
+ * Risk #2). The recommendation is a function of three things that change it:
+ * the calendar day (rolls at midnight), the latest logged session (a new log
+ * inserts a new workout_sessions row), and the composer prompt's behavioral
+ * version (a deploy that changes the coaching regime must not keep serving the
+ * old regime's cached card — coaching-judgment brief, Risk #3). Fingerprinting
+ * all three means a new log, a date rollover, OR a prompt-regime deploy is a
+ * natural cache miss — no invalidation hook needed. Same fingerprint on a
+ * reload → cache hit → zero model calls (AC #4).
  */
 export function recommendationFingerprint(today: string, latestSessionId: string | null): string {
-  return `${today}:${latestSessionId ?? "none"}`;
+  return `${today}:${latestSessionId ?? "none"}:p${RECOMMENDATION_PROMPT_VERSION}`;
 }
 
 export interface RemainingExercise {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { recommendationFingerprint } from "@/lib/facts";
-import { recommendationSystemPrompt } from "@/lib/openai/prompts";
+import { RECOMMENDATION_PROMPT_VERSION, recommendationSystemPrompt } from "@/lib/openai/prompts";
 import { todayRecommendationSchema } from "@/lib/openai/schemas";
 
 /**
@@ -33,7 +33,13 @@ describe("recommendationFingerprint", () => {
   });
 
   it("encodes no-history distinctly (never collides with a real session id)", () => {
-    expect(recommendationFingerprint("2026-07-06", null)).toBe("2026-07-06:none");
+    expect(recommendationFingerprint("2026-07-06", null)).toBe(
+      `2026-07-06:none:p${RECOMMENDATION_PROMPT_VERSION}`,
+    );
+  });
+
+  it("carries the prompt version — a coaching-regime deploy is a cache miss, not a stale day", () => {
+    expect(recommendationFingerprint("2026-07-06", "sess-1")).toContain(`:p${RECOMMENDATION_PROMPT_VERSION}`);
   });
 });
 
@@ -56,18 +62,24 @@ describe("recommendationSystemPrompt", () => {
     expect(recommendationSystemPrompt(facts, focuses, null)).toContain("no lifting label");
   });
 
-  it("carries the ADR-0005 guardrail: no computed reason → plan as written", () => {
+  it("keeps the program a baseline and diverges only for a computed coaching reason (ADR-0005)", () => {
     const p = recommendationSystemPrompt(facts, focuses, "Rest").toLowerCase();
     expect(p).toContain("baseline");
-    expect(p).toContain("guardrail");
+    expect(p).toContain("clear coaching reason supported by the computed facts");
   });
 
-  it("picks freshness-first — least-recently-trained focus wins over the calendar plan (ADR-0006)", () => {
+  it("decides with coaching judgment — the calendar is the default, freshness one signal among several (coaching-judgment brief, supersedes freshness-first)", () => {
     const p = recommendationSystemPrompt(facts, focuses, "Rest");
-    expect(p).toContain("FRESHNESS FIRST");
-    expect(p).toContain("LEAST-recently trained");
-    // The plan no longer anchors — it only breaks ties.
-    expect(p.toLowerCase()).toContain("does not anchor");
+    expect(p).toContain("coaching judgment");
+    expect(p).toContain("default recommendation");
+    expect(p).toContain("only one factor");
+    expect(p).not.toContain("FRESHNESS FIRST");
+  });
+
+  it("carries the 2026-07-07 incident guardrail: nothing recovered → rest/active recovery, never the overlapping plan", () => {
+    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    expect(p).toContain("GUARDRAIL");
+    expect(p).toContain("NEVER the overlapping plan");
   });
 
   it("forbids recomputing the facts (ADR-0004)", () => {
