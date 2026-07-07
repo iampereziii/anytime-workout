@@ -1,5 +1,5 @@
 import { openai } from "@/lib/openai/client";
-import { focusRecency } from "@/lib/facts";
+import { candidateRecommendations, focusRecency } from "@/lib/facts";
 import { RECOMMENDATION_MODEL } from "@/lib/openai/models";
 import { buildFactsBlock, chatSystemPrompt, formatHistorySummary } from "@/lib/openai/prompts";
 import { getChatContext } from "@/lib/supabase/queries";
@@ -34,6 +34,8 @@ export async function POST(req: Request) {
     const ctx = await getChatContext();
     const exerciseNames = new Map(ctx.exercises.map((e) => [e.id, e.name]));
     const plannedById = new Map(ctx.planned.map((p) => [p.id, p]));
+
+    const focus_recency = focusRecency(ctx.program_days, ctx.muscle_recency);
 
     const factsBlock = buildFactsBlock({
       today: ctx.today,
@@ -76,10 +78,17 @@ export async function POST(req: Request) {
         muscle_group: m.muscle_group,
         days_since: m.days_since,
       })),
-      // Same per-focus overlap facts the card picks on + the card's own suggestion
-      // (recency-first brief): card and chat reason from shared ground truth, so
-      // they can't disagree on plan-vs-freshness for the same facts (AC #7).
-      focus_recency: focusRecency(ctx.program_days, ctx.muscle_recency),
+      // Same per-focus overlap facts + the SAME scored candidate list the card
+      // composer receives, plus the card's own suggestion (advisory): card and
+      // chat reason from shared ground truth and shared candidates, so they
+      // weigh the same options for the same facts.
+      focus_recency,
+      candidates: candidateRecommendations(
+        focus_recency,
+        ctx.recent_sessions.map((s) => s.date),
+        ctx.today,
+        ctx.day?.label ?? null,
+      ),
       card_suggestion: ctx.card_suggestion,
       equipment: ctx.equipment,
     });

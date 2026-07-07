@@ -76,6 +76,22 @@ describe("recommendationSystemPrompt", () => {
     expect(p).not.toContain("FRESHNESS FIRST");
   });
 
+  it("carries the graded recovery heuristic (0-1 avoid / 2 acceptable / 3-5 excellent / 6+ high priority)", () => {
+    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    expect(p).toContain("RECOVERY HEURISTIC");
+    expect(p).toContain("strongly avoid recommending the same primary muscle groups");
+    expect(p).toContain("3-5 days: excellent candidates for training");
+    expect(p).toContain("6+ days: high priority unless another factor suggests otherwise");
+    expect(p).toContain("use the program day only as a tie-breaker");
+  });
+
+  it("treats the scored candidates as advisory — free to pick a lower-scoring option on the facts (v3)", () => {
+    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    expect(p).toContain("CANDIDATE RECOMMENDATIONS");
+    expect(p).toContain("ADVISORY recommendations, not ground truth");
+    expect(p).toContain("You are not required to select the highest-scoring candidate");
+  });
+
   it("carries the 2026-07-07 incident guardrail: nothing recovered → rest/active recovery, never the overlapping plan", () => {
     const p = recommendationSystemPrompt(facts, focuses, "Rest");
     expect(p).toContain("GUARDRAIL");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  candidateRecommendations,
   daysSinceLastWorkout,
   focusRecency,
   isDetraining,
@@ -214,6 +215,127 @@ describe("focusRecency", () => {
     const [focus] = focusRecency([{ label: "Arms", muscle_groups: ["biceps"] }], recency);
     expect(focus.freshest_overlap_days).toBeNull();
     expect(focus.groups).toEqual([{ muscle_group: "biceps", days_since: null }]);
+  });
+});
+
+// ---------- candidateRecommendations (advisory scored candidates) ----------
+
+describe("candidateRecommendations (coaching-judgment follow-up — rules score, model chooses)", () => {
+  const today = "2026-07-08";
+
+  it("ranks a recovered focus above one trained yesterday, with parent-level recency reasons", () => {
+    const [first, second] = candidateRecommendations(
+      [
+        {
+          label: "Pull",
+          groups: [
+            { muscle_group: "back", days_since: 1 },
+            { muscle_group: "biceps", days_since: 1 },
+          ],
+          freshest_overlap_days: 1,
+        },
+        {
+          label: "Push",
+          groups: [
+            { muscle_group: "chest", days_since: 3 },
+            { muscle_group: "shoulders", days_since: 3 },
+            { muscle_group: "triceps", days_since: null },
+          ],
+          freshest_overlap_days: 3,
+        },
+      ],
+      ["2026-07-07"],
+      today,
+      null,
+    );
+    expect(first.label).toBe("Push");
+    expect(first.score).toBeGreaterThan(second.score);
+    expect(first.reasons).toEqual(["chest 3d", "shoulders 3d", "triceps cold"]);
+  });
+
+  it("scores a never-trained focus as fully recovered AND maximally stale (90)", () => {
+    const [c] = candidateRecommendations(
+      [
+        {
+          label: "Lower Body",
+          groups: [
+            { muscle_group: "quads", days_since: null },
+            { muscle_group: "glutes", days_since: null },
+          ],
+          freshest_overlap_days: null,
+        },
+      ],
+      [],
+      today,
+      null,
+    );
+    expect(c.score).toBe(90);
+  });
+
+  it("breaks a dead heat toward today's scheduled label (+5 calendar tie-break)", () => {
+    const result = candidateRecommendations(
+      [
+        { label: "Legs A", groups: [{ muscle_group: "quads", days_since: 4 }], freshest_overlap_days: 4 },
+        { label: "Legs B", groups: [{ muscle_group: "hamstrings", days_since: 4 }], freshest_overlap_days: 4 },
+      ],
+      [],
+      today,
+      "Legs B",
+    );
+    expect(result[0].label).toBe("Legs B");
+    expect(result[0].score - result[1].score).toBe(5);
+  });
+
+  it("nothing recovered → the recovery-type candidate outranks every training focus (2026-07-07 guardrail in the numbers)", () => {
+    const result = candidateRecommendations(
+      [
+        { label: "Push", groups: [{ muscle_group: "chest", days_since: 1 }], freshest_overlap_days: 1 },
+        { label: "Legs", groups: [{ muscle_group: "quads", days_since: 0 }], freshest_overlap_days: 0 },
+        { label: "Rest", groups: [], freshest_overlap_days: null },
+      ],
+      ["2026-07-07", "2026-07-08"],
+      today,
+      "Push",
+    );
+    expect(result[0].label).toBe("Rest");
+    expect(result[0].score).toBeGreaterThanOrEqual(92);
+    expect(result[0].reasons).toContain(
+      "no focus is recovered — every training option overlaps muscles trained <=1 day ago",
+    );
+  });
+
+  it("a recovery-type focus scales with DISTINCT training days in the last 3 days", () => {
+    const rest = { label: "Rest", groups: [], freshest_overlap_days: null };
+    const [quiet] = candidateRecommendations([rest], [], today, null);
+    const [busy] = candidateRecommendations(
+      [rest],
+      ["2026-07-08", "2026-07-07", "2026-07-07", "2026-07-01"], // dupe day counts once; 07-01 is outside the window
+      today,
+      null,
+    );
+    expect(quiet.score).toBe(25);
+    expect(quiet.reasons).toEqual(["0 training days in the last 3 days"]);
+    expect(busy.score).toBe(65);
+    expect(busy.reasons).toEqual(["2 training days in the last 3 days"]);
+  });
+
+  it("keeps reasons at parent level only (both-level detail already lives in the focus facts)", () => {
+    const [c] = candidateRecommendations(
+      [
+        {
+          label: "Chest",
+          groups: [
+            { muscle_group: "chest", days_since: 2 },
+            { muscle_group: "chest_mid", days_since: 2 },
+          ],
+          freshest_overlap_days: 2,
+        },
+      ],
+      [],
+      today,
+      null,
+    );
+    expect(c.reasons).toEqual(["chest 2d"]);
   });
 });
 

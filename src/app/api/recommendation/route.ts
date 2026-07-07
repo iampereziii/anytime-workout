@@ -7,7 +7,7 @@ import {
   recommendationSystemPrompt,
 } from "@/lib/openai/prompts";
 import { todayRecommendationSchema } from "@/lib/openai/schemas";
-import { focusRecency, recommendationFingerprint } from "@/lib/facts";
+import { candidateRecommendations, focusRecency, recommendationFingerprint } from "@/lib/facts";
 import { getRecommendationContext, type ProgramDayCatalogEntry } from "@/lib/supabase/queries";
 import { supabaseServer } from "@/lib/supabase/server";
 import { ok } from "@/lib/http";
@@ -87,6 +87,16 @@ export async function GET() {
     // an opaque label like "Full Body — Power Day".
     const focus_recency = focusRecency(ctx.program_days, ctx.muscle_recency);
 
+    // Scored candidates (coaching-judgment follow-up): the rules side ranks every
+    // focus and the model CHOOSES among them — advisory scores, not a verdict; the
+    // prompt tells it a lower-scoring candidate may win on the facts.
+    const candidates = candidateRecommendations(
+      focus_recency,
+      ctx.history.map((h) => h.date),
+      base.today,
+      calendarLabel,
+    );
+
     const factsBlock = buildFactsBlock({
       today: base.today,
       day_number: base.day_number,
@@ -114,6 +124,7 @@ export async function GET() {
       history_summary: formatHistorySummary(ctx.history),
       muscle_recency: ctx.muscle_recency.map((m) => ({ muscle_group: m.muscle_group, days_since: m.days_since })),
       focus_recency,
+      candidates,
       equipment: null,
     });
 

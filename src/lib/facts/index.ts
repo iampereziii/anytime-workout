@@ -9,7 +9,7 @@
  * at the owner's request — flagged for a teach-mode revisit.
  */
 
-import { withParents } from "@/lib/muscle-groups";
+import { PARENT_GROUPS, withParents } from "@/lib/muscle-groups";
 import { RECOMMENDATION_PROMPT_VERSION } from "@/lib/openai/prompts";
 import type { Exercise, LoggedSet, PlannedExercise, PrBest, WorkoutSession } from "@/types/db";
 
@@ -147,6 +147,85 @@ export function focusRecency(
       freshest_overlap_days: trained.length ? Math.min(...trained) : null,
     };
   });
+}
+
+export interface CandidateRecommendation {
+  label: string;
+  /** Advisory 0–100 heuristic score — NOT ground truth. The prompts tell the
+   *  model it may pick any candidate the facts support better. */
+  score: number;
+  /** Human-readable computed reasons (parent-level recency / recent-load counts)
+   *  — every figure comes from the same computed facts, never invented. */
+  reasons: string[];
+}
+
+/**
+ * Scored candidate recommendations (coaching-judgment brief follow-up).
+ * Instead of the model receiving one pre-picked card, the RULES side scores
+ * every focus (ADR-0004: the scoring is deterministic and testable here) and
+ * both the Today-card composer and chat receive the full ranked list. The
+ * scores are explicitly ADVISORY — the prompts instruct the model to choose
+ * the candidate best supported by the facts, not necessarily the top score.
+ *
+ * Heuristic (documented so a surprising card is explainable from the row):
+ *  - Training focus (has tagged groups): recovery (0–55) from
+ *    `freshest_overlap_days` per the recovery rules (0–1d not recovered,
+ *    2d workable, 3+d/cold recovered) + staleness (0–35) from the average
+ *    days-since across its groups (cold counts as 7, each capped at 7) +
+ *    a +5 calendar tie-break for today's scheduled label.
+ *  - Recovery-type focus (no tagged groups — Rest / Active Recovery /
+ *    Conditioning): scales with distinct training days in the last 3 days,
+ *    and jumps to at least 92 when NO training focus is recovered (every
+ *    option overlaps muscles trained ≤1 day ago) — the 2026-07-07 incident
+ *    guardrail baked into the numbers, not just the prompt text.
+ * Sorted best-first; ties break alphabetically for determinism.
+ */
+export function candidateRecommendations(
+  focuses: FocusRecency[],
+  sessionDates: string[],
+  today: string, // yyyy-mm-dd (app-tz), same value rendered as "Today:" in the facts block
+  calendarLabel: string | null,
+): CandidateRecommendation[] {
+  const todayMid = atLocalMidnight(today);
+  const daysAgo = (date: string) => Math.round((todayMid.getTime() - atLocalMidnight(date).getTime()) / 86_400_000);
+  const trainingDaysLast3 = new Set(sessionDates.filter((d) => daysAgo(d) >= 0 && daysAgo(d) <= 2)).size;
+
+  const training = focuses.filter((f) => f.groups.length > 0);
+  const nothingRecovered =
+    training.length > 0 && training.every((f) => f.freshest_overlap_days !== null && f.freshest_overlap_days <= 1);
+
+  const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
+
+  const scored = focuses.map((f): CandidateRecommendation => {
+    if (f.groups.length === 0) {
+      // Recovery-type focus: worth more the harder the last 3 days were.
+      const reasons = [`${trainingDaysLast3} training day${trainingDaysLast3 === 1 ? "" : "s"} in the last 3 days`];
+      let score = 25 + 20 * Math.min(3, trainingDaysLast3);
+      if (nothingRecovered) {
+        score = Math.max(score, 92);
+        reasons.push("no focus is recovered — every training option overlaps muscles trained <=1 day ago");
+      }
+      return { label: f.label, score: clamp(score), reasons };
+    }
+
+    const fo = f.freshest_overlap_days;
+    // Recovery: how ready this focus's MOST recently trained muscle is.
+    const recovery = fo === null ? 55 : fo <= 1 ? 10 + 5 * fo : fo === 2 ? 40 : 55;
+    // Staleness: rewards the least-recently-trained option among recovered ones.
+    const capped = f.groups.map((g) => Math.min(7, g.days_since ?? 7));
+    const staleness = Math.round((capped.reduce((a, b) => a + b, 0) / capped.length) * 5);
+    const calendar = f.label === calendarLabel ? 5 : 0;
+
+    // Reasons at parent level only — the both-levels detail already lives in the
+    // Focus options facts; the candidate line stays scannable.
+    const parents = f.groups.filter((g) => (PARENT_GROUPS as readonly string[]).includes(g.muscle_group));
+    const reasons = (parents.length > 0 ? parents : f.groups).map(
+      (g) => `${g.muscle_group} ${g.days_since === null ? "cold" : `${g.days_since}d`}`,
+    );
+    return { label: f.label, score: clamp(recovery + staleness + calendar), reasons };
+  });
+
+  return scored.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
 }
 
 /**
