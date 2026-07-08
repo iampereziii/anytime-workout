@@ -95,7 +95,7 @@ export async function POST(req: Request) {
 
     const events = await openai().responses.create({
       model: RECOMMENDATION_MODEL,
-      instructions: chatSystemPrompt(factsBlock),
+      instructions: chatSystemPrompt(factsBlock, ctx.recommendation_mode),
       input: [...history, { role: "user" as const, content: question }],
       stream: true,
     });

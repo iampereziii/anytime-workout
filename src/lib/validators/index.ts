@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MUSCLE_GROUP_VOCABULARY } from "@/lib/muscle-groups";
+import { RECOMMENDATION_MODES } from "@/lib/recommendation-mode";
 
 /** Zod input schemas for every API route — parse at the boundary, trust nothing. */
 
@@ -57,4 +58,9 @@ export const ParseRequestSchema = z.object({
 /** PUT /api/equipment-profiles — set the active profile by id (adaptive readjustment, Risk #4). */
 export const SetActiveProfileSchema = z.object({
   id: z.uuid(),
+});
+
+/** PUT /api/recommendation-mode — set the active recommendation mode (Adaptive Workout Planning). */
+export const SetRecommendationModeSchema = z.object({
+  mode: z.enum(RECOMMENDATION_MODES),
 });

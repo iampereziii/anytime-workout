@@ -12,6 +12,11 @@ import {
   type RemainingExercise,
 } from "@/lib/facts";
 import type { HistorySession } from "@/lib/openai/prompts";
+import {
+  asRecommendationMode,
+  DEFAULT_RECOMMENDATION_MODE,
+  type RecommendationMode,
+} from "@/lib/recommendation-mode";
 import type { Exercise, PlannedExercise, PrBest, ProgramDay, SessionPart } from "@/types/db";
 
 /**
@@ -37,6 +42,33 @@ export interface TodayContext {
 
 function throwIf(error: { message: string } | null): void {
   if (error) throw new Error(error.message);
+}
+
+/**
+ * The active recommendation mode (Adaptive Workout Planning). Singleton row
+ * app_settings.id = 1 (migration 0005). A missing row or an unrecognized value
+ * falls back to the default — the card/chat must never fail to compose over a
+ * settings read, so this is best-effort and always returns a valid mode.
+ */
+export async function getRecommendationMode(): Promise<RecommendationMode> {
+  const sb = supabaseServer();
+  const { data, error } = await sb
+    .from("app_settings")
+    .select("recommendation_mode")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error || !data) return DEFAULT_RECOMMENDATION_MODE;
+  return asRecommendationMode(data.recommendation_mode);
+}
+
+/** Set the active recommendation mode (PUT /api/recommendation-mode). Upserts the
+ *  singleton so a fresh DB with no seeded row still self-heals to the chosen mode. */
+export async function setRecommendationMode(mode: RecommendationMode): Promise<void> {
+  const sb = supabaseServer();
+  const { error } = await sb
+    .from("app_settings")
+    .upsert({ id: 1, recommendation_mode: mode, updated_at: new Date().toISOString() }, { onConflict: "id" });
+  throwIf(error);
 }
 
 export async function getTodayContext(now = appToday()): Promise<TodayContext> {
@@ -129,6 +161,9 @@ export interface ChatContext extends TodayContext {
   /** Today's cached card suggestion for the CURRENT fingerprint, or null if none
    *  has been composed yet — injected into chat so it can't contradict the card. */
   card_suggestion: { headline: string; reason: string } | null;
+  /** Active recommendation mode — drives the chat coaching policy (Adaptive
+   *  Workout Planning) and the card-suggestion fingerprint lookup below. */
+  recommendation_mode: RecommendationMode;
 }
 
 export interface SuggestedLift {
@@ -157,8 +192,11 @@ export interface RecommendationContext {
   /** Every day of the active program + its planned lifts — the allowed focuses
    *  (distinct labels) and the source for "Suggested lifts" on divergence. */
   program_days: ProgramDayCatalogEntry[];
-  /** Latest logged session id — half of the cache fingerprint (Risk #2). */
+  /** Latest logged session id — part of the cache fingerprint (Risk #2). */
   latest_session_id: string | null;
+  /** Active recommendation mode — folds into the fingerprint AND the composer
+   *  prompt (Adaptive Workout Planning). */
+  recommendation_mode: RecommendationMode;
   /** Compact history lines for the prompt (most recent first). */
   history: HistorySession[];
 }
@@ -178,6 +216,7 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
     { data: sessions, error: sessErr },
     { data: days, error: daysErr },
     { data: latest, error: latestErr },
+    recommendation_mode,
   ] = await Promise.all([
     sb
       .from("workout_sessions")
@@ -192,6 +231,7 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
       .eq("programs.is_active", true)
       .order("day_number"),
     sb.from("workout_sessions").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    getRecommendationMode(),
   ]);
   throwIf(sessErr);
   throwIf(daysErr);
@@ -265,6 +305,7 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
     muscle_recency: muscleGroupRecency(recencySessions, now),
     program_days,
     latest_session_id: latest?.id ?? null,
+    recommendation_mode,
     history,
   };
 }
@@ -280,6 +321,7 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
     { data: activeProfile, error: equipErr },
     { data: days, error: daysErr },
     { data: latest, error: latestErr },
+    recommendation_mode,
   ] = await Promise.all([
     sb.from("pr_bests").select("*"),
     sb.from("exercises").select("*"),
@@ -295,6 +337,7 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
       .eq("programs.is_active", true)
       .order("day_number"),
     sb.from("workout_sessions").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    getRecommendationMode(),
   ]);
   throwIf(bestsErr);
   throwIf(exErr);
@@ -304,9 +347,10 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
   throwIf(latestErr);
 
   // The card the owner is looking at right now = the cache row for the CURRENT
-  // fingerprint (same key /api/recommendation reads). Absent row → no card yet;
+  // fingerprint (same key /api/recommendation reads — mode included, so a mode
+  // switch reads the card composed for that mode). Absent row → no card yet;
   // chat just goes without it. Best-effort: a read failure must not break chat.
-  const fingerprint = recommendationFingerprint(base.today, latest?.id ?? null);
+  const fingerprint = recommendationFingerprint(base.today, latest?.id ?? null, recommendation_mode);
   const { data: cachedCard } = await sb
     .from("daily_recommendations")
     .select("payload")
@@ -369,5 +413,6 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
     equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
     program_days,
     card_suggestion,
+    recommendation_mode,
   };
 }

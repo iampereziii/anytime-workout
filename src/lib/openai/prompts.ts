@@ -7,6 +7,8 @@
  * truth and never recompute.
  */
 
+import type { RecommendationMode } from "@/lib/recommendation-mode";
+
 export interface FactsRemainingLine {
   exercise_name: string;
   unit: string;
@@ -202,6 +204,36 @@ export function formatHistorySummary(sessions: HistorySession[]): string {
 }
 
 /**
+ * Recommendation-mode policy block (feature brief: Adaptive Workout Planning).
+ * The mode is the owner's dial on how far a recommendation may leave the planned
+ * program; this text is the authoritative divergence policy both the card
+ * composer and chat obey. It sits ABOVE the general coaching philosophy so it
+ * governs it — "how far you diverge" is set here, everything else stays the same.
+ * The recovery guardrails (nothing recovered → rest) are mode-independent and
+ * still apply in every mode, including Follow.
+ */
+export function modeDirective(mode: RecommendationMode): string {
+  switch (mode) {
+    case "follow":
+      return [
+        "RECOMMENDATION MODE — FOLLOW PROGRAM:",
+        "The owner wants to follow their planned program. Treat today's scheduled workout as the recommendation whenever recovery allows. Do NOT reorder days for optimization, freshness, or variety. Diverge ONLY when today's scheduled muscle groups are not recovered (trained 0-1 days ago): then recommend the nearest recovered scheduled focus, or rest / active recovery when nothing is recovered. When the scheduled workout is trainable, recommend it.",
+      ].join("\n");
+    case "coach":
+      return [
+        "RECOMMENDATION MODE — COACH:",
+        "The owner wants full coaching. Ignore the program's day order entirely. Recommend the single highest-value training decision for today from recovery, readiness, training balance, and long-term progression — whether or not it matches any scheduled day. The calendar plan is background information only, never a default.",
+      ].join("\n");
+    case "adapt":
+    default:
+      return [
+        "RECOMMENDATION MODE — ADAPT PROGRAM:",
+        "The owner wants the program adapted to their recovery. Keep the program's focuses, but freely reorder them: recommend whichever scheduled focus best matches today's recovery and readiness instead of defaulting to today's calendar slot. Prefer a recovered program focus over an off-program workout.",
+      ].join("\n");
+  }
+}
+
+/**
  * System prompt for /api/chat (GPT-5.4) — the coaching composer, never the calculator.
  *
  * Coaching-judgment regime (owner-drafted, aligns chat with the card composer and
@@ -213,7 +245,7 @@ export function formatHistorySummary(sessions: HistorySession[]): string {
  * guardrail (nothing recovered → rest/active recovery, never the overlapping
  * plan) is carried inside the recovery rules; recommendationSystemPrompt mirrors it.
  */
-export function chatSystemPrompt(factsBlock: string): string {
+export function chatSystemPrompt(factsBlock: string, mode: RecommendationMode): string {
   return [
     "You are the owner's personal strength coach inside their workout app.",
     "Your job is NOT to repeat today's program. Your job is to recommend what the owner should actually do today based on the facts.",
@@ -225,8 +257,10 @@ export function chatSystemPrompt(factsBlock: string): string {
     "CANDIDATES:",
     "When the facts include candidate recommendations with scores, treat the scores as advisory. Choose the recommendation you believe is best — you are not required to select the highest-scoring candidate if another option is better supported by the facts.",
     "",
+    modeDirective(mode),
+    "",
     "COACHING PHILOSOPHY:",
-    "Act like an experienced strength coach. The workout program is a baseline, not a schedule that must be followed. Coach the athlete, not the calendar. Use the workout history and muscle-group recency to decide what should be trained today. Missed days, extra workouts, and training out of order are completely normal. Recommend the workout that best matches the owner's recovery and progression.",
+    "Act like an experienced strength coach. The workout program is a baseline, not a schedule that must be followed. Coach the athlete, not the calendar. How far you diverge from the program is governed by the RECOMMENDATION MODE above. Use the workout history and muscle-group recency to decide what should be trained today. Missed days, extra workouts, and training out of order are completely normal. Recommend the workout that best matches the owner's recovery and progression.",
     "",
     "RECOVERY RULES:",
     "0-1 days since a muscle group was trained: not recovered — strongly avoid training the same primary muscle groups. 2 days: usually acceptable — prefer these muscles over anything trained yesterday. 3-5 days: recovered — excellent candidates for training. 6+ days: high priority unless another factor suggests otherwise.",
@@ -269,9 +303,12 @@ export function chatSystemPrompt(factsBlock: string): string {
  * candidates + graded recovery heuristic (the facts now carry an advisory
  * ranked candidate list from lib/facts `candidateRecommendations` — the model
  * chooses among them, not necessarily the top score — and both prompts state
- * the 0-1 / 2 / 3-5 / 6+ day recovery windows).
+ * the 0-1 / 2 / 3-5 / 6+ day recovery windows) · v4 = recommendation modes
+ * (feature brief: Adaptive Workout Planning — the mode directive governs how far
+ * the recommendation may leave the program; the mode also folds into the
+ * fingerprint so switching modes recomposes).
  */
-export const RECOMMENDATION_PROMPT_VERSION = 3;
+export const RECOMMENDATION_PROMPT_VERSION = 4;
 
 /**
  * System prompt for GET /api/recommendation (GPT-5.4-mini, Structured Outputs) —
@@ -291,11 +328,15 @@ export function recommendationSystemPrompt(
   factsBlock: string,
   allowedFocuses: readonly string[],
   calendarLabel: string | null,
+  mode: RecommendationMode,
 ): string {
   return [
     "You are the owner's strength coach, composing the ONE-LINE suggestion on the app's home screen — the first thing they see when they open the app.",
     "",
     "Your goal is to recommend what would make the best training decision TODAY based on the owner's recent training history and recovery — not simply today's scheduled program.",
+    "",
+    modeDirective(mode),
+    "The mode above governs how far you may leave the calendar plan. Your suggested_focus must still be one of the allowed values below (all are the program's own focuses); in Coach mode, pick the highest-value focus regardless of the calendar slot.",
     "",
     "OUTPUT:",
     "Output only the schema fields.",

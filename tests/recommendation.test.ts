@@ -6,7 +6,7 @@ import { todayRecommendationSchema } from "@/lib/openai/schemas";
 /**
  * Feature: AI-driven Today recommendation card.
  * Covers the three pure pieces the route composes:
- *  - the cache fingerprint (AC #4: reload without a new log/date = same key),
+ *  - the cache fingerprint (AC #4: reload without a new log/date/mode = same key),
  *  - the composer system prompt (Risk #1 focus constraint + ADR-0005 guardrail),
  *  - the schema-constrained focus enum (numbers/choices never free-form).
  */
@@ -14,32 +14,41 @@ import { todayRecommendationSchema } from "@/lib/openai/schemas";
 // ---------- recommendationFingerprint (cache invalidation, AC #4) ----------
 
 describe("recommendationFingerprint", () => {
-  it("is stable for the same date + latest session (reload = cache hit)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1")).toBe(
-      recommendationFingerprint("2026-07-06", "sess-1"),
+  it("is stable for the same date + latest session + mode (reload = cache hit)", () => {
+    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).toBe(
+      recommendationFingerprint("2026-07-06", "sess-1", "adapt"),
     );
   });
 
   it("changes when a new session is logged (new latest id → regenerate)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1")).not.toBe(
-      recommendationFingerprint("2026-07-06", "sess-2"),
+    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).not.toBe(
+      recommendationFingerprint("2026-07-06", "sess-2", "adapt"),
     );
   });
 
   it("changes when the date rolls over (midnight → regenerate)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1")).not.toBe(
-      recommendationFingerprint("2026-07-07", "sess-1"),
+    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).not.toBe(
+      recommendationFingerprint("2026-07-07", "sess-1", "adapt"),
+    );
+  });
+
+  it("changes when the recommendation mode switches (Adaptive Workout Planning → recompose)", () => {
+    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).not.toBe(
+      recommendationFingerprint("2026-07-06", "sess-1", "coach"),
+    );
+    expect(recommendationFingerprint("2026-07-06", "sess-1", "follow")).not.toBe(
+      recommendationFingerprint("2026-07-06", "sess-1", "coach"),
     );
   });
 
   it("encodes no-history distinctly (never collides with a real session id)", () => {
-    expect(recommendationFingerprint("2026-07-06", null)).toBe(
-      `2026-07-06:none:p${RECOMMENDATION_PROMPT_VERSION}`,
+    expect(recommendationFingerprint("2026-07-06", null, "adapt")).toBe(
+      `2026-07-06:none:p${RECOMMENDATION_PROMPT_VERSION}:madapt`,
     );
   });
 
   it("carries the prompt version — a coaching-regime deploy is a cache miss, not a stale day", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1")).toContain(`:p${RECOMMENDATION_PROMPT_VERSION}`);
+    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).toContain(`:p${RECOMMENDATION_PROMPT_VERSION}`);
   });
 });
 
@@ -50,26 +59,26 @@ describe("recommendationSystemPrompt", () => {
   const focuses = ["Push", "Pull", "Legs", "Rest"];
 
   it("constrains suggested_focus to the program's own day labels (Risk #1)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
     expect(p).toContain("Push | Pull | Legs | Rest");
   });
 
   it("states today's calendar plan so the model knows the baseline", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest")).toContain('calendar plan for today is: "Rest"');
+    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain('calendar plan for today is: "Rest"');
   });
 
   it("handles a no-label (recovery) day", () => {
-    expect(recommendationSystemPrompt(facts, focuses, null)).toContain("no lifting label");
+    expect(recommendationSystemPrompt(facts, focuses, null, "adapt")).toContain("no lifting label");
   });
 
   it("keeps the program a baseline and diverges only for a computed coaching reason (ADR-0005)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest").toLowerCase();
+    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt").toLowerCase();
     expect(p).toContain("baseline");
     expect(p).toContain("clear coaching reason supported by the computed facts");
   });
 
   it("decides with coaching judgment — the calendar is the default, freshness one signal among several (coaching-judgment brief, supersedes freshness-first)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
     expect(p).toContain("coaching judgment");
     expect(p).toContain("default recommendation");
     expect(p).toContain("only one factor");
@@ -77,7 +86,7 @@ describe("recommendationSystemPrompt", () => {
   });
 
   it("carries the graded recovery heuristic (0-1 avoid / 2 acceptable / 3-5 excellent / 6+ high priority)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
     expect(p).toContain("RECOVERY HEURISTIC");
     expect(p).toContain("strongly avoid recommending the same primary muscle groups");
     expect(p).toContain("3-5 days: excellent candidates for training");
@@ -86,24 +95,32 @@ describe("recommendationSystemPrompt", () => {
   });
 
   it("treats the scored candidates as advisory — free to pick a lower-scoring option on the facts (v3)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
     expect(p).toContain("CANDIDATE RECOMMENDATIONS");
     expect(p).toContain("ADVISORY recommendations, not ground truth");
     expect(p).toContain("You are not required to select the highest-scoring candidate");
   });
 
   it("carries the 2026-07-07 incident guardrail: nothing recovered → rest/active recovery, never the overlapping plan", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest");
+    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
     expect(p).toContain("GUARDRAIL");
     expect(p).toContain("NEVER the overlapping plan");
   });
 
   it("forbids recomputing the facts (ADR-0004)", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest")).toContain("GROUND TRUTH");
+    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain("GROUND TRUTH");
   });
 
   it("embeds the facts block verbatim", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest")).toContain(facts);
+    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain(facts);
+  });
+
+  it("injects the active recommendation mode directive (Adaptive Workout Planning)", () => {
+    expect(recommendationSystemPrompt(facts, focuses, "Rest", "follow")).toContain(
+      "RECOMMENDATION MODE — FOLLOW PROGRAM",
+    );
+    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain("RECOMMENDATION MODE — ADAPT PROGRAM");
+    expect(recommendationSystemPrompt(facts, focuses, "Rest", "coach")).toContain("RECOMMENDATION MODE — COACH");
   });
 });
 

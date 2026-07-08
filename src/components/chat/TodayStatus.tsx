@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiGet } from "@/lib/api-client";
+import { MODE_CHANGED_EVENT } from "@/components/chat/RecommendationModePicker";
 
 /**
  * The "today status" card (Flow 7): last-workout recency, detraining flag,
@@ -66,16 +67,29 @@ export function TodayStatus() {
   const [rec, setRec] = useState<Recommendation | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    apiGet<ProgramToday>("/api/program/today")
-      .then(setToday)
-      .catch(() => setError("Couldn't load today's status — offline?"));
-    // Recommendation is best-effort and non-blocking: any failure just leaves
-    // the calendar-day header in place. Never surfaces an error to the card.
+  // Recommendation is best-effort and non-blocking: any failure just leaves the
+  // calendar-day header in place. Never surfaces an error to the card.
+  const loadRecommendation = useCallback(() => {
     apiGet<{ recommendation: Recommendation | null }>("/api/recommendation")
       .then((d) => setRec(d.recommendation))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    apiGet<ProgramToday>("/api/program/today")
+      .then(setToday)
+      .catch(() => setError("Couldn't load today's status — offline?"));
+    loadRecommendation();
+
+    // A recommendation-mode switch shifts the fingerprint → the card recomposes.
+    // Re-fetch so the header reflects the new mode without a full reload.
+    const onModeChanged = () => {
+      setRec(null); // drop back to the calendar header while the new mode composes
+      loadRecommendation();
+    };
+    window.addEventListener(MODE_CHANGED_EVENT, onModeChanged);
+    return () => window.removeEventListener(MODE_CHANGED_EVENT, onModeChanged);
+  }, [loadRecommendation]);
 
   if (error) return <p className="rounded-xl bg-zinc-100 p-3 text-sm text-zinc-500 dark:bg-zinc-900">{error}</p>;
   if (!today) return <p className="rounded-xl bg-zinc-100 p-3 text-sm text-zinc-400 dark:bg-zinc-900">Loading today…</p>;

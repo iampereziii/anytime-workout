@@ -61,7 +61,7 @@ export async function GET() {
   try {
     const ctx = await getRecommendationContext();
     const { base } = ctx;
-    const fingerprint = recommendationFingerprint(base.today, ctx.latest_session_id);
+    const fingerprint = recommendationFingerprint(base.today, ctx.latest_session_id, ctx.recommendation_mode);
     const sb = supabaseServer();
 
     // Cache hit → return the stored payload verbatim. Zero model calls (AC #4).
@@ -132,7 +132,7 @@ export async function GET() {
     const response = await openai().responses.parse(
       {
         model: RECOMMENDATION_COMPOSE_MODEL,
-        instructions: recommendationSystemPrompt(factsBlock, focuses, calendarLabel),
+        instructions: recommendationSystemPrompt(factsBlock, focuses, calendarLabel, ctx.recommendation_mode),
         input: "What should I train today? Give me the one-line home-screen suggestion.",
         text: { format: zodTextFormat(schema, "today_recommendation") },
       },

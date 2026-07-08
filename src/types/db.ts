@@ -71,6 +71,14 @@ export interface EquipmentProfile {
   is_active: boolean;
 }
 
+/** Singleton settings row (id = 1). recommendation_mode is one of the values in
+ *  src/lib/recommendation-mode.ts — see migration 0005. */
+export interface AppSettings {
+  id: number;
+  recommendation_mode: string;
+  updated_at: string;
+}
+
 /** Row shape of the pr_bests view (derived — never a table). */
 export interface PrBest {
   exercise_id: string;
