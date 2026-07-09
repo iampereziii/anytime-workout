@@ -1,140 +1,121 @@
 import { describe, expect, it } from "vitest";
-import { recommendationFingerprint } from "@/lib/facts";
-import { RECOMMENDATION_PROMPT_VERSION, recommendationSystemPrompt } from "@/lib/openai/prompts";
+import { recommendationSystemPrompt } from "@/lib/openai/prompts";
 import { todayRecommendationSchema } from "@/lib/openai/schemas";
 
 /**
- * Feature: AI-driven Today recommendation card.
- * Covers the three pure pieces the route composes:
- *  - the cache fingerprint (AC #4: reload without a new log/date/mode = same key),
- *  - the composer system prompt (Risk #1 focus constraint + ADR-0005 guardrail),
- *  - the schema-constrained focus enum (numbers/choices never free-form).
+ * AI-generated Today recommendation (ADR-0007). Covers the two pure pieces the
+ * route composes:
+ *  - the composer system prompt (originate the workout; recovery gate; catalog),
+ *  - the schema (free-form focus + catalog-constrained lifts, or a recovery day).
+ * The recommendation is pinned per calendar day by the route (finding 4).
  */
 
-// ---------- recommendationFingerprint (cache invalidation, AC #4) ----------
-
-describe("recommendationFingerprint", () => {
-  it("is stable for the same date + latest session + mode (reload = cache hit)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).toBe(
-      recommendationFingerprint("2026-07-06", "sess-1", "adapt"),
-    );
-  });
-
-  it("changes when a new session is logged (new latest id → regenerate)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).not.toBe(
-      recommendationFingerprint("2026-07-06", "sess-2", "adapt"),
-    );
-  });
-
-  it("changes when the date rolls over (midnight → regenerate)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).not.toBe(
-      recommendationFingerprint("2026-07-07", "sess-1", "adapt"),
-    );
-  });
-
-  it("changes when the recommendation mode switches (Adaptive Workout Planning → recompose)", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).not.toBe(
-      recommendationFingerprint("2026-07-06", "sess-1", "coach"),
-    );
-    expect(recommendationFingerprint("2026-07-06", "sess-1", "follow")).not.toBe(
-      recommendationFingerprint("2026-07-06", "sess-1", "coach"),
-    );
-  });
-
-  it("encodes no-history distinctly (never collides with a real session id)", () => {
-    expect(recommendationFingerprint("2026-07-06", null, "adapt")).toBe(
-      `2026-07-06:none:p${RECOMMENDATION_PROMPT_VERSION}:madapt`,
-    );
-  });
-
-  it("carries the prompt version — a coaching-regime deploy is a cache miss, not a stale day", () => {
-    expect(recommendationFingerprint("2026-07-06", "sess-1", "adapt")).toContain(`:p${RECOMMENDATION_PROMPT_VERSION}`);
-  });
-});
-
-// ---------- recommendationSystemPrompt (Risk #1 + ADR-0005) ----------
+// ---------- recommendationSystemPrompt (originate the workout; ADR-0007) ----------
 
 describe("recommendationSystemPrompt", () => {
   const facts = "=== FACTS ===\nDays since last workout: 1\n=== END FACTS ===";
-  const focuses = ["Push", "Pull", "Legs", "Rest"];
+  const exercises = ["Squat", "Deadlift", "Pull-up"];
 
-  it("constrains suggested_focus to the program's own day labels (Risk #1)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
-    expect(p).toContain("Push | Pull | Legs | Rest");
+  it("instructs the model to originate the workout (focus + composed lifts)", () => {
+    const p = recommendationSystemPrompt(facts, exercises).toLowerCase();
+    expect(p).toContain("compose");
+    expect(p).toContain("focus");
+    expect(p).toContain("sets, reps, weight");
   });
 
-  it("states today's calendar plan so the model knows the baseline", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain('calendar plan for today is: "Rest"');
+  it("constrains exercise choice to the allowed catalog (can't invent a movement)", () => {
+    expect(recommendationSystemPrompt(facts, exercises)).toContain("Squat | Deadlift | Pull-up");
   });
 
-  it("handles a no-label (recovery) day", () => {
-    expect(recommendationSystemPrompt(facts, focuses, null, "adapt")).toContain("no lifting label");
+  it("carries the deterministic recovery gate as a HARD rule", () => {
+    const p = recommendationSystemPrompt(facts, exercises);
+    expect(p).toContain("RECOVERY GATE (HARD)");
+    expect(p).toContain("RECOVERY REQUIRED");
+    expect(p).toContain("is_recovery = true");
   });
 
-  it("keeps the program a baseline and diverges only for a computed coaching reason (ADR-0005)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt").toLowerCase();
-    expect(p).toContain("baseline");
-    expect(p).toContain("clear coaching reason supported by the computed facts");
+  it("treats the computed PR targets as the progression anchor", () => {
+    const p = recommendationSystemPrompt(facts, exercises);
+    expect(p).toContain("PROGRESSION");
+    expect(p).toContain("Next PR target");
+    expect(p).toContain("progression anchor");
   });
 
-  it("decides with coaching judgment — the calendar is the default, freshness one signal among several (coaching-judgment brief, supersedes freshness-first)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
-    expect(p).toContain("coaching judgment");
-    expect(p).toContain("default recommendation");
-    expect(p).toContain("only one factor");
-    expect(p).not.toContain("FRESHNESS FIRST");
+  it("keeps the graded recovery heuristic (0-1 avoid / 2 acceptable / 3-5 excellent / 6+ priority)", () => {
+    const p = recommendationSystemPrompt(facts, exercises);
+    expect(p).toContain("0-1 days since a muscle group was trained");
+    expect(p).toContain("3-5 days");
+    expect(p).toContain("6+ days");
   });
 
-  it("carries the graded recovery heuristic (0-1 avoid / 2 acceptable / 3-5 excellent / 6+ high priority)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
-    expect(p).toContain("RECOVERY HEURISTIC");
-    expect(p).toContain("strongly avoid recommending the same primary muscle groups");
-    expect(p).toContain("3-5 days: excellent candidates for training");
-    expect(p).toContain("6+ days: high priority unless another factor suggests otherwise");
-    expect(p).toContain("use the program day only as a tie-breaker");
+  it("forbids recomputing the facts (ADR-0004) and embeds the facts block verbatim", () => {
+    const p = recommendationSystemPrompt(facts, exercises);
+    expect(p).toContain("source of truth");
+    expect(p).toContain(facts);
   });
 
-  it("treats the scored candidates as advisory — free to pick a lower-scoring option on the facts (v3)", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
-    expect(p).toContain("CANDIDATE RECOMMENDATIONS");
-    expect(p).toContain("ADVISORY recommendations, not ground truth");
-    expect(p).toContain("You are not required to select the highest-scoring candidate");
-  });
-
-  it("carries the 2026-07-07 incident guardrail: nothing recovered → rest/active recovery, never the overlapping plan", () => {
-    const p = recommendationSystemPrompt(facts, focuses, "Rest", "adapt");
-    expect(p).toContain("GUARDRAIL");
-    expect(p).toContain("NEVER the overlapping plan");
-  });
-
-  it("forbids recomputing the facts (ADR-0004)", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain("GROUND TRUTH");
-  });
-
-  it("embeds the facts block verbatim", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain(facts);
-  });
-
-  it("injects the active recommendation mode directive (Adaptive Workout Planning)", () => {
-    expect(recommendationSystemPrompt(facts, focuses, "Rest", "follow")).toContain(
-      "RECOMMENDATION MODE — FOLLOW PROGRAM",
-    );
-    expect(recommendationSystemPrompt(facts, focuses, "Rest", "adapt")).toContain("RECOMMENDATION MODE — ADAPT PROGRAM");
-    expect(recommendationSystemPrompt(facts, focuses, "Rest", "coach")).toContain("RECOMMENDATION MODE — COACH");
+  it("has no stored-program or recommendation-mode language (retired)", () => {
+    const p = recommendationSystemPrompt(facts, exercises);
+    expect(p).not.toContain("RECOMMENDATION MODE");
+    expect(p).not.toContain("calendar plan");
   });
 });
 
-// ---------- todayRecommendationSchema (schema-constrained focus) ----------
+// ---------- todayRecommendationSchema (free-form focus + catalog-constrained lifts) ----------
 
 describe("todayRecommendationSchema", () => {
-  const schema = todayRecommendationSchema(["Push", "Pull", "Legs", "Rest"]);
+  const schema = todayRecommendationSchema(["Squat", "Deadlift", "Pull-up"]);
 
-  it("accepts a focus within the allowed labels", () => {
-    const parsed = schema.parse({ suggested_focus: "Pull", headline: "Suggested: Pull", reason: "push yesterday" });
-    expect(parsed.suggested_focus).toBe("Pull");
+  it("accepts a composed workout using catalog exercises", () => {
+    const parsed = schema.parse({
+      focus: "Lower Body",
+      headline: "Suggested: Lower Body",
+      reason: "Legs are 5 days recovered.",
+      is_recovery: false,
+      lifts: [
+        { exercise_name: "Squat", target_sets: 4, target_reps: 8, target_weight: 20, unit: "reps", rest_seconds: 120, cue: null },
+      ],
+    });
+    expect(parsed.lifts?.[0].exercise_name).toBe("Squat");
   });
 
-  it("rejects a focus outside the program's labels (can't invent a day)", () => {
-    expect(() => schema.parse({ suggested_focus: "Cardio", headline: "x", reason: "y" })).toThrow();
+  it("rejects a lift naming an exercise outside the catalog (can't invent a movement)", () => {
+    expect(() =>
+      schema.parse({
+        focus: "Arms",
+        headline: "x",
+        reason: "y",
+        is_recovery: false,
+        lifts: [
+          { exercise_name: "Barbell Curl", target_sets: 3, target_reps: 12, target_weight: 15, unit: "reps", rest_seconds: 90, cue: null },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts a recovery day (lifts null)", () => {
+    const parsed = schema.parse({
+      focus: "Active Recovery",
+      headline: "Recovery First",
+      reason: "Everything was trained within the last day.",
+      is_recovery: true,
+      lifts: null,
+    });
+    expect(parsed.is_recovery).toBe(true);
+    expect(parsed.lifts).toBeNull();
+  });
+
+  it("allows AMRAP (null reps) and pure bodyweight (null weight)", () => {
+    const parsed = schema.parse({
+      focus: "Pull",
+      headline: "Suggested: Pull",
+      reason: "Back is 4 days cold.",
+      is_recovery: false,
+      lifts: [
+        { exercise_name: "Pull-up", target_sets: 3, target_reps: null, target_weight: null, unit: "reps", rest_seconds: 120, cue: "slow negatives" },
+      ],
+    });
+    expect(parsed.lifts?.[0].target_reps).toBeNull();
+    expect(parsed.lifts?.[0].target_weight).toBeNull();
   });
 });

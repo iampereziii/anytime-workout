@@ -46,27 +46,61 @@ export const RecommendationSchema = z.object({
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 
 /**
- * Today-card recommendation (feature brief: ai-today-recommendation).
- * The model PICKS a focus among the program's own day labels (Risk #1) and
- * composes a one-line headline + one-line reason — it never derives numbers
- * (ADR-0004). suggested_focus is a schema-constrained enum built from the live
- * program day labels, so the value always maps back to a real program day for
- * the "Suggested lifts" pill lookup. Built per-request because the allowed
- * labels come from the DB.
+ * Today recommendation (ADR-0007 — AI generates the daily recommendation).
+ * The model now ORIGINATES the whole workout: it names the focus and composes the
+ * lifts, sets, reps, and weight (the numbers ADR-0004 previously kept deterministic).
+ * The two safety-critical signals it must NOT override — progression targets and
+ * the recovery-readiness gate — are supplied to it as hard facts in the prompt.
+ *
+ * `exercise_name` is a schema-constrained enum built from the live `exercises`
+ * catalog (confirmed design decision): the AI freely chooses which real movements
+ * to program (and their sets/reps/weight), but cannot invent an exercise — so the
+ * name always maps back to an id for the remaining-count and PR lookups, and stays
+ * inside the equipment/muscle-tagging the app knows about. Built per-request
+ * because the allowed names come from the DB.
  */
-export function todayRecommendationSchema(focuses: readonly [string, ...string[]]) {
+export function todayRecommendationSchema(exerciseNames: readonly [string, ...string[]]) {
+  const lift = z.object({
+    /** One of the app's real exercises (verbatim from the catalog). */
+    exercise_name: z.enum(exerciseNames),
+    target_sets: z.number().int().positive(),
+    /** Value in the exercise's unit; null = AMRAP ("max"). */
+    target_reps: z.number().int().positive().nullable(),
+    /** ADDED lbs for bodyweight movements; absolute lbs otherwise; null = pure BW / n-a. */
+    target_weight: z.number().nullable(),
+    unit: z.enum(["reps", "seconds", "minutes"]),
+    rest_seconds: z.number().int().positive().nullable(),
+    /** Short tempo / form cue, or null. */
+    cue: z.string().nullable(),
+  });
   return z.object({
-    /** One of the program's day labels (push/pull/legs/rest…). */
-    suggested_focus: z.enum(focuses),
+    /** Free-form focus label the model chooses — e.g. "Pull", "Lower Body", "Recovery". */
+    focus: z.string(),
     /** One line, card headline — e.g. "Suggested: Pull". */
     headline: z.string(),
-    /** One line citing the computed reason — e.g. "you hit push yesterday; back/biceps are 4 days cold". */
+    /** One concise sentence citing the coaching reason, using only the supplied facts. */
     reason: z.string(),
+    /** True → rest / active recovery day: `lifts` is null or empty. */
+    is_recovery: z.boolean(),
+    /** The composed workout, or null on a recovery day. */
+    lifts: z.array(lift).nullable(),
   });
 }
 
+export interface TodayRecommendationLift {
+  exercise_name: string;
+  target_sets: number;
+  target_reps: number | null;
+  target_weight: number | null;
+  unit: "reps" | "seconds" | "minutes";
+  rest_seconds: number | null;
+  cue: string | null;
+}
+
 export interface TodayRecommendation {
-  suggested_focus: string;
+  focus: string;
   headline: string;
   reason: string;
+  is_recovery: boolean;
+  lifts: TodayRecommendationLift[] | null;
 }

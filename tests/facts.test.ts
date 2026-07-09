@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
-  candidateRecommendations,
   daysSinceLastWorkout,
-  focusRecency,
+  detectNewPrs,
   isDetraining,
   muscleGroupRecency,
   nextPrTargets,
+  recoveryRecommended,
   remainingToday,
+  type MuscleGroupRecency,
 } from "@/lib/facts";
-import type { Exercise, PlannedExercise, PrBest } from "@/types/db";
+import type { Exercise, PrBest } from "@/types/db";
 
 /**
- * GUIDE TESTS for the owner-written facts layer (ADR-0004).
- * These are the executable spec — red until you implement src/lib/facts/index.ts.
- * Run: npm test
+ * GUIDE TESTS for the deterministic facts layer (ADR-0004, amended by ADR-0007).
+ * The model now originates the workout; progression targets and the recovery gate
+ * stay deterministic here. Run: npm test
  */
 
 // ---------- daysSinceLastWorkout ----------
@@ -53,43 +54,32 @@ describe("isDetraining (business rule 6: gap ≥ 14 days)", () => {
     expect(isDetraining(null)).toBe(false));
 });
 
-// ---------- remainingToday ----------
+// ---------- remainingToday (Flow 7 — vs the day's recommendation, ADR-0007) ----------
 
-const planned = (id: string, exercise_id: string, target_sets: number, sort_order: number): PlannedExercise => ({
-  id,
-  program_day_id: "day1",
-  exercise_id,
-  target_sets,
-  target_reps: 12,
-  target_weight: null,
-  rest_seconds: 120,
-  notes: null,
-  sort_order,
-});
+describe("remainingToday (recommended sets − logged sets; split AM/PM)", () => {
+  const target = [
+    { exercise_id: "squat", target_sets: 4 },
+    { exercise_id: "rdl", target_sets: 4 },
+    { exercise_id: "lunge", target_sets: 3 },
+  ];
 
-describe("remainingToday (Flow 7: split AM/PM sessions)", () => {
-  const plan = [planned("p1", "squat", 4, 1), planned("p2", "rdl", 4, 2), planned("p3", "lunge", 3, 3)];
-
-  it("nothing logged → everything remaining, in plan order", () => {
-    const r = remainingToday(plan, []);
-    expect(r.map((x) => x.planned.exercise_id)).toEqual(["squat", "rdl", "lunge"]);
+  it("nothing logged → everything remaining, in recommendation order", () => {
+    const r = remainingToday(target, []);
+    expect(r.map((x) => x.exercise_id)).toEqual(["squat", "rdl", "lunge"]);
     expect(r[0].setsRemaining).toBe(4);
   });
 
   it("partially done mid-day: squats fully logged AM, RDL half done → squat gone, rdl partial", () => {
-    const logged = [
-      ...Array(4).fill({ exercise_id: "squat" }),
-      ...Array(2).fill({ exercise_id: "rdl" }),
-    ];
-    const r = remainingToday(plan, logged);
-    expect(r.map((x) => x.planned.exercise_id)).toEqual(["rdl", "lunge"]);
+    const logged = [...Array(4).fill({ exercise_id: "squat" }), ...Array(2).fill({ exercise_id: "rdl" })];
+    const r = remainingToday(target, logged);
+    expect(r.map((x) => x.exercise_id)).toEqual(["rdl", "lunge"]);
     expect(r[0].setsDone).toBe(2);
     expect(r[0].setsRemaining).toBe(2);
   });
 
-  it("ad-hoc exercise not in the plan (Flow 9) does not affect remaining", () => {
+  it("ad-hoc exercise not in the recommendation (Flow 9) does not affect remaining", () => {
     const logged = [{ exercise_id: "pushup" }, { exercise_id: "pushup" }];
-    expect(remainingToday(plan, logged)).toHaveLength(3);
+    expect(remainingToday(target, logged)).toHaveLength(3);
   });
 
   it("everything logged → empty", () => {
@@ -98,7 +88,11 @@ describe("remainingToday (Flow 7: split AM/PM sessions)", () => {
       ...Array(4).fill({ exercise_id: "rdl" }),
       ...Array(3).fill({ exercise_id: "lunge" }),
     ];
-    expect(remainingToday(plan, logged)).toEqual([]);
+    expect(remainingToday(target, logged)).toEqual([]);
+  });
+
+  it("an empty recommendation (recovery day) → nothing remaining", () => {
+    expect(remainingToday([], [{ exercise_id: "squat" }])).toEqual([]);
   });
 });
 
@@ -154,188 +148,32 @@ describe("muscleGroupRecency", () => {
   });
 });
 
-// ---------- focusRecency (per-focus overlap facts, recency-first brief) ----------
+// ---------- recoveryRecommended (re-homed 2026-07-07 guardrail, ADR-0007 finding 2) ----------
 
-describe("focusRecency", () => {
-  const today = new Date("2026-07-07T09:30:00");
-  // Push-dominant session yesterday (the incident): chest/triceps/shoulders at both levels.
-  const recency = muscleGroupRecency(
-    [
-      { date: "2026-07-06", muscle_groups: ["chest_mid", "triceps", "shoulders_front"] },
-      { date: "2026-07-01", muscle_groups: ["quads", "glutes"] },
-    ],
-    today,
-  );
+describe("recoveryRecommended (hard gate — forces recovery only at full-body exhaustion)", () => {
+  const PARENTS = ["chest", "back", "shoulders", "biceps", "triceps", "core", "quads", "hamstrings", "glutes", "calves"];
+  const rec = (entries: [string, number][]): MuscleGroupRecency[] =>
+    entries.map(([muscle_group, days_since]) => ({ muscle_group, days_since, last_trained_on: "2026-07-06" }));
 
-  it("computes per-focus groups (both levels) + freshest_overlap_days = min days-since", () => {
-    const [upper, lower] = focusRecency(
-      [
-        { label: "Upper — Chest + Back", muscle_groups: ["chest_mid", "triceps", "back_lats"] },
-        { label: "Lower Body", muscle_groups: ["quads", "glutes"] },
-      ],
-      recency,
-    );
-
-    // Upper overlaps yesterday's push (chest/triceps = 1d) but back is cold.
-    expect(upper.freshest_overlap_days).toBe(1);
-    expect(upper.groups).toContainEqual({ muscle_group: "chest", days_since: 1 });
-    expect(upper.groups).toContainEqual({ muscle_group: "chest_mid", days_since: 1 });
-    expect(upper.groups).toContainEqual({ muscle_group: "back_lats", days_since: null }); // cold
-
-    // Lower's freshest muscle is 6 days old → the far staler (better) pick.
-    expect(lower.freshest_overlap_days).toBe(6);
+  it("first run (no recency) → not forced", () => {
+    expect(recoveryRecommended([])).toEqual({ recommended: false, reason: null });
   });
 
-  it("unions days that repeat a label into one focus row", () => {
-    const result = focusRecency(
-      [
-        { label: "Full Body", muscle_groups: ["chest_mid"] },
-        { label: "Full Body", muscle_groups: ["quads"] },
-      ],
-      recency,
-    );
-    expect(result).toHaveLength(1);
-    expect(result[0].groups.map((g) => g.muscle_group)).toEqual(expect.arrayContaining(["chest", "chest_mid", "quads"]));
+  it("forces recovery when EVERY parent group was trained <=1 day ago", () => {
+    const r = recoveryRecommended(rec(PARENTS.map((g) => [g, g === "chest" ? 0 : 1])));
+    expect(r.recommended).toBe(true);
+    expect(r.reason).toBeTruthy();
   });
 
-  it("a day with an untagged exercise contributes nothing and does not crash", () => {
-    const [focus] = focusRecency([{ label: "Chest", muscle_groups: ["chest_mid", ""] }], recency);
-    // Empty-string tag rolls up to nothing; real tags still count.
-    expect(focus.groups.some((g) => g.muscle_group === "chest_mid")).toBe(true);
-    expect(focus.freshest_overlap_days).toBe(1);
+  it("does NOT force recovery when a parent group is recovered (2+ days) — that group is trainable", () => {
+    const r = recoveryRecommended(rec(PARENTS.map((g) => [g, g === "quads" ? 3 : 1])));
+    expect(r.recommended).toBe(false);
   });
 
-  it("an all-cardio focus (no groups) is fully cold, not an error", () => {
-    const [focus] = focusRecency([{ label: "Conditioning", muscle_groups: [] }], recency);
-    expect(focus.groups).toEqual([]);
-    expect(focus.freshest_overlap_days).toBeNull();
-  });
-
-  it("a focus whose groups were never trained in the window is fully cold", () => {
-    const [focus] = focusRecency([{ label: "Arms", muscle_groups: ["biceps"] }], recency);
-    expect(focus.freshest_overlap_days).toBeNull();
-    expect(focus.groups).toEqual([{ muscle_group: "biceps", days_since: null }]);
-  });
-});
-
-// ---------- candidateRecommendations (advisory scored candidates) ----------
-
-describe("candidateRecommendations (coaching-judgment follow-up — rules score, model chooses)", () => {
-  const today = "2026-07-08";
-
-  it("ranks a recovered focus above one trained yesterday, with parent-level recency reasons", () => {
-    const [first, second] = candidateRecommendations(
-      [
-        {
-          label: "Pull",
-          groups: [
-            { muscle_group: "back", days_since: 1 },
-            { muscle_group: "biceps", days_since: 1 },
-          ],
-          freshest_overlap_days: 1,
-        },
-        {
-          label: "Push",
-          groups: [
-            { muscle_group: "chest", days_since: 3 },
-            { muscle_group: "shoulders", days_since: 3 },
-            { muscle_group: "triceps", days_since: null },
-          ],
-          freshest_overlap_days: 3,
-        },
-      ],
-      ["2026-07-07"],
-      today,
-      null,
-    );
-    expect(first.label).toBe("Push");
-    expect(first.score).toBeGreaterThan(second.score);
-    expect(first.reasons).toEqual(["chest 3d", "shoulders 3d", "triceps cold"]);
-  });
-
-  it("scores a never-trained focus as fully recovered AND maximally stale (90)", () => {
-    const [c] = candidateRecommendations(
-      [
-        {
-          label: "Lower Body",
-          groups: [
-            { muscle_group: "quads", days_since: null },
-            { muscle_group: "glutes", days_since: null },
-          ],
-          freshest_overlap_days: null,
-        },
-      ],
-      [],
-      today,
-      null,
-    );
-    expect(c.score).toBe(90);
-  });
-
-  it("breaks a dead heat toward today's scheduled label (+5 calendar tie-break)", () => {
-    const result = candidateRecommendations(
-      [
-        { label: "Legs A", groups: [{ muscle_group: "quads", days_since: 4 }], freshest_overlap_days: 4 },
-        { label: "Legs B", groups: [{ muscle_group: "hamstrings", days_since: 4 }], freshest_overlap_days: 4 },
-      ],
-      [],
-      today,
-      "Legs B",
-    );
-    expect(result[0].label).toBe("Legs B");
-    expect(result[0].score - result[1].score).toBe(5);
-  });
-
-  it("nothing recovered → the recovery-type candidate outranks every training focus (2026-07-07 guardrail in the numbers)", () => {
-    const result = candidateRecommendations(
-      [
-        { label: "Push", groups: [{ muscle_group: "chest", days_since: 1 }], freshest_overlap_days: 1 },
-        { label: "Legs", groups: [{ muscle_group: "quads", days_since: 0 }], freshest_overlap_days: 0 },
-        { label: "Rest", groups: [], freshest_overlap_days: null },
-      ],
-      ["2026-07-07", "2026-07-08"],
-      today,
-      "Push",
-    );
-    expect(result[0].label).toBe("Rest");
-    expect(result[0].score).toBeGreaterThanOrEqual(92);
-    expect(result[0].reasons).toContain(
-      "no focus is recovered — every training option overlaps muscles trained <=1 day ago",
-    );
-  });
-
-  it("a recovery-type focus scales with DISTINCT training days in the last 3 days", () => {
-    const rest = { label: "Rest", groups: [], freshest_overlap_days: null };
-    const [quiet] = candidateRecommendations([rest], [], today, null);
-    const [busy] = candidateRecommendations(
-      [rest],
-      ["2026-07-08", "2026-07-07", "2026-07-07", "2026-07-01"], // dupe day counts once; 07-01 is outside the window
-      today,
-      null,
-    );
-    expect(quiet.score).toBe(25);
-    expect(quiet.reasons).toEqual(["0 training days in the last 3 days"]);
-    expect(busy.score).toBe(65);
-    expect(busy.reasons).toEqual(["2 training days in the last 3 days"]);
-  });
-
-  it("keeps reasons at parent level only (both-level detail already lives in the focus facts)", () => {
-    const [c] = candidateRecommendations(
-      [
-        {
-          label: "Chest",
-          groups: [
-            { muscle_group: "chest", days_since: 2 },
-            { muscle_group: "chest_mid", days_since: 2 },
-          ],
-          freshest_overlap_days: 2,
-        },
-      ],
-      [],
-      today,
-      null,
-    );
-    expect(c.reasons).toEqual(["chest 2d"]);
+  it("does NOT force recovery when a parent group is cold (never trained in window) — it's fresh", () => {
+    // Omit calves entirely: 9 parents trained yesterday, calves cold → train calves-ish.
+    const r = recoveryRecommended(rec(PARENTS.filter((g) => g !== "calves").map((g) => [g, 1])));
+    expect(r.recommended).toBe(false);
   });
 });
 
@@ -348,6 +186,8 @@ const ex = (id: string, is_bodyweight: boolean, unit: Exercise["unit"] = "reps")
   is_bodyweight,
   unit,
   muscle_groups: [],
+  default_rest_seconds: null,
+  default_cue: null,
   created_at: "2026-07-05",
 });
 
@@ -381,5 +221,23 @@ describe("nextPrTargets (Flow 8: +1–2 reps OR +2.5–5 lbs — minimum increme
     const bests = [{ ...best("plank", 60, null, true), unit: "seconds" as const }];
     const [t] = nextPrTargets(bests, [ex("plank", true, "seconds")]);
     expect(t).toMatchObject({ target_reps: 61, rule_applied: "add_reps" });
+  });
+});
+
+// ---------- detectNewPrs (unchanged; smoke) ----------
+
+describe("detectNewPrs", () => {
+  it("no prior best → no celebration (first log is a baseline, not a record)", () => {
+    expect(detectNewPrs([], [{ exercise_id: "squat", reps: 10, weight: 20 }], [ex("squat", false)])).toEqual([]);
+  });
+
+  it("beats the weighted best on load → one PR", () => {
+    const prs = detectNewPrs(
+      [best("squat", 10, 20, false)],
+      [{ exercise_id: "squat", reps: 10, weight: 22.5 }],
+      [ex("squat", false)],
+    );
+    expect(prs).toHaveLength(1);
+    expect(prs[0]).toMatchObject({ rule_applied: "weight", weight: 22.5 });
   });
 });
