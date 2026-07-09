@@ -1,10 +1,23 @@
 import { z } from "zod";
+import { MuscleGroupSchema } from "@/lib/validators";
 
 /**
  * Structured Outputs schemas (challenge #7).
  * The parse call must return schema-guaranteed JSON — never free-form text
  * that gets re-parsed by hand.
  */
+
+/**
+ * Suggest-tags call (feature brief: ai-auto-tagging-new-exercises). GPT-5.4-mini
+ * infers a new exercise's muscle groups from its NAME, constrained to the fixed
+ * two-level vocabulary via the SAME `MuscleGroupSchema` enum the create route uses
+ * — so a hallucinated group is impossible at the schema boundary. Empty is a valid
+ * answer (cardio/mobility). The server re-validates before returning (AI proposes,
+ * owner confirms — ADR-0004).
+ */
+export const SuggestedTagsSchema = z.object({
+  muscle_groups: z.array(MuscleGroupSchema),
+});
 
 /** One parsed exercise entry from a free-text log ("did 3x12 elevated, 3x10 dips"). */
 export const ParsedExerciseSchema = z.object({

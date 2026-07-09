@@ -305,6 +305,29 @@ export function recommendationSystemPrompt(factsBlock: string, allowedExercises:
   ].join("\n");
 }
 
+/**
+ * System prompt for POST /api/exercises/suggest-tags (GPT-5.4-mini, Structured
+ * Outputs) — infer the muscle groups a NEW exercise trains from its name alone.
+ * Tagging only; the owner confirms every suggestion in the picker before it saves
+ * (ADR-0004 division of labor — AI proposes, owner confirms). PURE.
+ *
+ * Two-level vocabulary (lib/muscle-groups): prefer a specific SUB-group when
+ * confident, fall back to the PARENT when unsure (Risk #1 / Known Constraints —
+ * withParents makes either level read correctly in recency). The enum is enforced
+ * by Structured Outputs + a server re-validate; this prompt only shapes intent.
+ */
+export function suggestTagsSystemPrompt(vocabulary: readonly string[]): string {
+  return [
+    "You tag a strength/fitness exercise with the muscle groups it primarily trains, given only its name.",
+    "",
+    "Rules:",
+    `- Choose ONLY from this fixed vocabulary (use each value verbatim): ${vocabulary.join(", ")}.`,
+    "- Return the PRIMARY movers — the muscles the exercise is chosen to train — not every muscle that stabilizes. Usually 1-3 tags.",
+    "- Prefer a specific sub-group when you are confident (e.g. an incline press → chest_upper); fall back to the parent group when unsure (e.g. a loaded carry → core, back — do not guess a sub-group).",
+    "- If the name is not a recognizable exercise, or is pure cardio/mobility with no clear primary muscle (e.g. a treadmill walk, foam rolling), return an empty list. An empty list is a valid, correct answer — never invent tags to fill space.",
+  ].join("\n");
+}
+
 /** System prompt for /api/parse (GPT-5.4-mini, Structured Outputs) — extraction only, never advice. */
 export function parseSystemPrompt(): string {
   return [

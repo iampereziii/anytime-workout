@@ -5,6 +5,7 @@ import { Command } from "cmdk";
 import { apiGet } from "@/lib/api-client";
 import { didYouMean, searchOffline, type ExerciseMatch } from "@/lib/exercises/dedup";
 import { normalizeExerciseName } from "@/lib/exercises/normalize";
+import { suggestMuscleGroups } from "@/lib/exercises/suggest-tags";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ConfirmSheet } from "./ConfirmSheet";
@@ -37,7 +38,11 @@ export function ExerciseCombobox({
   const [createFor, setCreateFor] = useState<{ name: string; candidates: ExerciseMatch[] } | null>(null);
   const [createOpts, setCreateOpts] = useState<CreateOpts>(defaultCreateOpts);
   const [creating, setCreating] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Which create-sheet open a suggestion belongs to — a stale reply (sheet closed or
+   *  reopened for another name) is discarded. */
+  const suggestTokenRef = useRef(0);
 
   const byId = useMemo(() => new Map(exercises.map((e) => [e.id, e])), [exercises]);
 
@@ -110,6 +115,23 @@ export function ExerciseCombobox({
     if (!name) return;
     setCreateOpts(defaultCreateOpts);
     setCreateFor({ name, candidates: didYouMean(results) });
+    void suggestTags(name);
+  }
+
+  /**
+   * Fire the AI muscle-group suggestion on sheet open (auto-tagging brief). Pre-selects
+   * the picker only if the owner hasn't already chosen tags — a suggestion never
+   * overwrites the owner's edits, and a stale reply is dropped by the token guard.
+   * Best-effort: any failure leaves the picker empty and the create flow unchanged.
+   */
+  async function suggestTags(name: string) {
+    const token = ++suggestTokenRef.current;
+    setSuggesting(true);
+    const groups = await suggestMuscleGroups(name);
+    if (token !== suggestTokenRef.current) return; // sheet closed or reopened for another name
+    setSuggesting(false);
+    if (groups.length === 0) return;
+    setCreateOpts((prev) => (prev.muscle_groups.length === 0 ? { ...prev, muscle_groups: groups } : prev));
   }
 
   const q = query.trim();
@@ -160,7 +182,11 @@ export function ExerciseCombobox({
       <ConfirmSheet
         open={createFor !== null}
         title={createFor?.candidates.length ? "Did you mean one of these?" : `Create “${createFor?.name}”`}
-        onClose={() => setCreateFor(null)}
+        onClose={() => {
+          suggestTokenRef.current++; // drop any in-flight suggestion for the closing sheet
+          setSuggesting(false);
+          setCreateFor(null);
+        }}
       >
         {createFor && (
           <div className="flex flex-col gap-2">
@@ -178,7 +204,7 @@ export function ExerciseCombobox({
                 <span className="text-xs text-zinc-500">{Math.round(c.similarity * 100)}% similar</span>
               </Button>
             ))}
-            <CreateFields value={createOpts} onChange={setCreateOpts} />
+            <CreateFields value={createOpts} onChange={setCreateOpts} suggesting={suggesting} />
             <Button disabled={creating} onClick={() => void create()}>
               {creating
                 ? "Creating…"

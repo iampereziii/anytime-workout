@@ -54,6 +54,13 @@ export const ParseRequestSchema = z.object({
   text: z.string().trim().min(1).max(1000),
 });
 
+/** POST /api/exercises/suggest-tags — infer muscle-group tags for a NEW exercise
+ *  from its name (feature brief: ai-auto-tagging-new-exercises). Same name bounds
+ *  as ExerciseCreateSchema so the suggestion runs on exactly what will be created. */
+export const SuggestTagsRequestSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+});
+
 /** PUT /api/equipment-profiles — set the active profile by id (adaptive readjustment, Risk #4). */
 export const SetActiveProfileSchema = z.object({
   id: z.uuid(),
