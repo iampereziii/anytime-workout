@@ -4,6 +4,7 @@ import { useState } from "react";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import { didYouMean, type ExerciseMatch } from "@/lib/exercises/dedup";
 import { normalizeExerciseName } from "@/lib/exercises/normalize";
+import { suggestMuscleGroups } from "@/lib/exercises/suggest-tags";
 import type { ParsedLog } from "@/lib/openai/schemas";
 import { Button } from "@/components/ui/button";
 import { CreateFields, defaultCreateOpts, type CreateOpts } from "./CreateFields";
@@ -47,12 +48,40 @@ export function FreeTextLog({
   const [error, setError] = useState<string | null>(null);
   const [clarification, setClarification] = useState<string | null>(null);
   const [proposals, setProposals] = useState<ProposalRow[] | null>(null);
+  /** Per-row: AI tag suggestion in flight (auto-tagging brief). Keyed by raw_name so
+   *  it survives row-array identity churn and stale replies land on the right row. */
+  const [suggesting, setSuggesting] = useState<Record<string, boolean>>({});
+
+  /**
+   * Fire the AI muscle-group suggestion for a create-new row (auto-tagging brief).
+   * Pre-selects the row's picker only if it's still create-new AND the owner hasn't
+   * already chosen tags — a suggestion never overwrites edits. Best-effort: any
+   * failure leaves the picker empty and the flow unchanged.
+   */
+  async function suggestForRow(rawName: string) {
+    const name = normalizeExerciseName(rawName);
+    if (!name) return;
+    setSuggesting((s) => ({ ...s, [rawName]: true }));
+    const groups = await suggestMuscleGroups(name);
+    setSuggesting((s) => ({ ...s, [rawName]: false }));
+    if (groups.length === 0) return;
+    setProposals((prev) =>
+      prev
+        ? prev.map((r) =>
+            r.raw_name === rawName && r.chosen === "__create__" && r.create_opts.muscle_groups.length === 0
+              ? { ...r, create_opts: { ...r.create_opts, muscle_groups: groups } }
+              : r,
+          )
+        : prev,
+    );
+  }
 
   async function parse() {
     setBusy(true);
     setError(null);
     setClarification(null);
     setProposals(null);
+    setSuggesting({});
     try {
       const { parsed } = await apiPost<{ parsed: ParsedLog }>("/api/parse", { text });
       if (parsed.clarification_needed || parsed.entries.length === 0) {
@@ -82,6 +111,11 @@ export function FreeTextLog({
         });
       }
       setProposals(rows);
+      // Pre-tag every row that landed on create-new — the name is fixed here (rule 2
+      // resolution already ran), so the suggestion fires once per create row.
+      for (const row of rows) {
+        if (row.chosen === "__create__") void suggestForRow(row.raw_name);
+      }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Couldn't parse that — are you online?");
     } finally {
@@ -160,11 +194,17 @@ export function FreeTextLog({
               </div>
               <select
                 value={row.chosen}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const chosen = e.target.value;
                   setProposals((prev) =>
-                    prev ? prev.map((r, j) => (j === i ? { ...r, chosen: e.target.value } : r)) : prev,
-                  )
-                }
+                    prev ? prev.map((r, j) => (j === i ? { ...r, chosen } : r)) : prev,
+                  );
+                  // Switching a row TO create-new opens its picker — suggest tags then,
+                  // unless the owner already chose some (never overwrite an edit).
+                  if (chosen === "__create__" && row.create_opts.muscle_groups.length === 0) {
+                    void suggestForRow(row.raw_name);
+                  }
+                }}
                 className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
               >
                 {row.candidates.map((c) => (
@@ -178,6 +218,7 @@ export function FreeTextLog({
                 <div className="mt-2">
                   <CreateFields
                     value={row.create_opts}
+                    suggesting={suggesting[row.raw_name]}
                     onChange={(create_opts) =>
                       setProposals((prev) =>
                         prev ? prev.map((r, j) => (j === i ? { ...r, create_opts } : r)) : prev,

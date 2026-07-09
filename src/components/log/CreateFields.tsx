@@ -85,7 +85,15 @@ function Chip({
  * may be a parent OR a sub-group — the recency engine rolls sub-groups up to
  * their parent, so tagging at either level reads correctly.
  */
-function MuscleGroupPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+function MuscleGroupPicker({
+  value,
+  onChange,
+  suggesting,
+}: {
+  value: string[];
+  onChange: (v: string[]) => void;
+  suggesting?: boolean;
+}) {
   const selected = new Set(value);
   function toggle(group: string) {
     const next = new Set(selected);
@@ -95,7 +103,10 @@ function MuscleGroupPicker({ value, onChange }: { value: string[]; onChange: (v:
   }
   return (
     <label className="flex flex-col gap-1 text-xs text-zinc-500">
-      Muscle groups (drives recency — leave empty for cardio/mobility)
+      <span className="flex items-center gap-1.5">
+        Muscle groups (drives recency — leave empty for cardio/mobility)
+        {suggesting && <span className="text-emerald-600 dark:text-emerald-400">· suggesting…</span>}
+      </span>
       <div className="flex flex-col gap-1.5 rounded-lg bg-zinc-100 p-2 dark:bg-zinc-800">
         {PARENT_GROUPS.map((parent) => (
           <div key={parent} className="flex flex-wrap items-center gap-1">
@@ -115,7 +126,16 @@ function MuscleGroupPicker({ value, onChange }: { value: string[]; onChange: (v:
   );
 }
 
-export function CreateFields({ value, onChange }: { value: CreateOpts; onChange: (v: CreateOpts) => void }) {
+export function CreateFields({
+  value,
+  onChange,
+  suggesting,
+}: {
+  value: CreateOpts;
+  onChange: (v: CreateOpts) => void;
+  /** True while the AI tag suggestion for this exercise is in flight (auto-tagging brief). */
+  suggesting?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-2 gap-2">
@@ -142,6 +162,7 @@ export function CreateFields({ value, onChange }: { value: CreateOpts; onChange:
       <MuscleGroupPicker
         value={value.muscle_groups}
         onChange={(muscle_groups) => onChange({ ...value, muscle_groups })}
+        suggesting={suggesting}
       />
     </div>
   );
