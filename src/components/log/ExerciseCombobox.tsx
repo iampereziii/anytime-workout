@@ -72,7 +72,17 @@ export function ExerciseCombobox({
   function pick(id: string, name: string) {
     const detail =
       byId.get(id) ??
-      ({ id, name, aliases: [], is_bodyweight: false, unit: "reps", muscle_groups: [], created_at: "" } as Exercise);
+      ({
+        id,
+        name,
+        aliases: [],
+        is_bodyweight: false,
+        unit: "reps",
+        muscle_groups: [],
+        default_rest_seconds: null,
+        default_cue: null,
+        created_at: "",
+      } as Exercise);
     setQuery("");
     setResults([]);
     onSelect(detail);

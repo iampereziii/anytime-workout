@@ -1,7 +1,12 @@
 /**
- * The deterministic facts layer — the trust core of the app (ADR-0004).
- * Every numeric claim in a recommendation comes from here; the model is
- * instructed to treat this output as ground truth and never recompute.
+ * The deterministic facts layer — the trust core of the app (ADR-0004, amended by
+ * ADR-0007). The model now ORIGINATES the workout (focus + lifts + sets + reps +
+ * weight); the two safety-critical signals that stay deterministic live here and
+ * are fed to the model as hard facts it composes around but cannot silently
+ * override: progressive-overload targets (`nextPrTargets`, off pr_bests +
+ * exercises) and the recovery-readiness gate (`recoveryRecommended`, off
+ * session-derived muscle recency over PARENT_GROUPS). Neither needs the retired
+ * program tables. Date math and remaining-count also stay here (never the model).
  *
  * Spec: tests/facts.test.ts (all green).
  *
@@ -10,9 +15,7 @@
  */
 
 import { PARENT_GROUPS, withParents } from "@/lib/muscle-groups";
-import { RECOMMENDATION_PROMPT_VERSION } from "@/lib/openai/prompts";
-import type { RecommendationMode } from "@/lib/recommendation-mode";
-import type { Exercise, LoggedSet, PlannedExercise, PrBest, WorkoutSession } from "@/types/db";
+import type { Exercise, LoggedSet, PrBest, WorkoutSession } from "@/types/db";
 
 /** Local-midnight Date from an ISO date string (yyyy-mm-dd) — date-only semantics. */
 function atLocalMidnight(isoDate: string): Date {
@@ -81,199 +84,75 @@ export function muscleGroupRecency(
     .sort((a, b) => a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group));
 }
 
-export interface FocusGroupRecency {
-  muscle_group: string;
-  /** Days since this group was last trained; null = not trained in the recency window (cold). */
-  days_since: number | null;
-}
-
-export interface FocusRecency {
-  label: string;
-  /** This focus's muscle groups at BOTH levels (sub-groups + rolled-up parents),
-   *  soonest-trained first, cold groups last. */
-  groups: FocusGroupRecency[];
-  /** Min days-since among this focus's trained groups — how recently ANY muscle it
-   *  hits was worked. Higher = staler focus = better pick. null = none of its groups
-   *  were trained in the window (fully cold). */
-  freshest_overlap_days: number | null;
+export interface RecoveryRecommendation {
+  /** True → the app FORCES a recovery/rest recommendation (hard fact to the model). */
+  recommended: boolean;
+  /** Human-readable computed reason when forced; null otherwise. */
+  reason: string | null;
 }
 
 /**
- * Per-focus overlap facts (recency-first brief). For each program-day LABEL,
- * take the union of muscle groups its planned lifts train, expand to both levels
- * (`withParents`), and attach each group's computed days-since from
- * `muscleGroupRecency`. `freshest_overlap_days` is the min days-since among the
- * trained groups — the freshness-first signal the model picks on (larger = the
- * focus's muscles are all colder = the better call). This is the fact ADR-0004
- * says must be computed, not left to the model to infer from a label like
- * "Full Body — Power Day".
+ * Recovery-readiness gate (ADR-0007 finding 2) — the re-homed 2026-07-07 incident
+ * guardrail. Originally coded against `program_days`' focus menu, its real input
+ * was always session-derived muscle recency over PARENT_GROUPS; neither is dropped,
+ * so it is re-homed here as a deterministic fact rather than handed to the model
+ * whose judgment it exists to backstop.
  *
- * Days that repeat a label are unioned (one focus = one row). An all-cardio /
- * untagged day contributes no groups and yields `freshest_overlap_days: null`
- * (fully cold) without crashing.
+ * A parent group is "recovered enough to anchor a workout" when it was trained 2+
+ * days ago OR never trained in the recency window (cold/fresh). Recovery is FORCED
+ * only when NO parent group qualifies — i.e. every one of the 10 parents was
+ * trained <=1 day ago. Strict and conservative by design: it fires only at true
+ * full-body exhaustion (the incident shape), and never suppresses training while a
+ * genuinely fresh muscle group exists. In softer cases the model still receives
+ * full muscle recency and picks the fresh muscles itself.
  */
-export function focusRecency(
-  days: { label: string; muscle_groups: string[] }[],
-  recency: MuscleGroupRecency[],
-): FocusRecency[] {
-  const daysSinceByGroup = new Map(recency.map((r) => [r.muscle_group, r.days_since]));
-
-  // Union each label's groups across day_numbers, preserving first-seen order.
-  const order: string[] = [];
-  const byLabel = new Map<string, Set<string>>();
-  for (const d of days) {
-    let set = byLabel.get(d.label);
-    if (!set) {
-      set = new Set<string>();
-      byLabel.set(d.label, set);
-      order.push(d.label);
-    }
-    for (const g of withParents(d.muscle_groups)) set.add(g);
-  }
-
-  return order.map((label) => {
-    const groups: FocusGroupRecency[] = [...byLabel.get(label)!]
-      .map((g) => ({ muscle_group: g, days_since: daysSinceByGroup.get(g) ?? null }))
-      // soonest-trained first; cold (null) sinks to the bottom; ties alphabetical.
-      .sort((a, b) => {
-        if (a.days_since === null && b.days_since === null) return a.muscle_group.localeCompare(b.muscle_group);
-        if (a.days_since === null) return 1;
-        if (b.days_since === null) return -1;
-        return a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group);
-      });
-    const trained = groups.filter((g) => g.days_since !== null).map((g) => g.days_since as number);
-    return {
-      label,
-      groups,
-      freshest_overlap_days: trained.length ? Math.min(...trained) : null,
-    };
+export function recoveryRecommended(recency: MuscleGroupRecency[]): RecoveryRecommendation {
+  const daysByGroup = new Map(recency.map((r) => [r.muscle_group, r.days_since]));
+  const anyRecovered = PARENT_GROUPS.some((g) => {
+    const d = daysByGroup.get(g);
+    return d === undefined || d >= 2; // cold (never in window) or rested
   });
-}
-
-export interface CandidateRecommendation {
-  label: string;
-  /** Advisory 0–100 heuristic score — NOT ground truth. The prompts tell the
-   *  model it may pick any candidate the facts support better. */
-  score: number;
-  /** Human-readable computed reasons (parent-level recency / recent-load counts)
-   *  — every figure comes from the same computed facts, never invented. */
-  reasons: string[];
-}
-
-/**
- * Scored candidate recommendations (coaching-judgment brief follow-up).
- * Instead of the model receiving one pre-picked card, the RULES side scores
- * every focus (ADR-0004: the scoring is deterministic and testable here) and
- * both the Today-card composer and chat receive the full ranked list. The
- * scores are explicitly ADVISORY — the prompts instruct the model to choose
- * the candidate best supported by the facts, not necessarily the top score.
- *
- * Heuristic (documented so a surprising card is explainable from the row):
- *  - Training focus (has tagged groups): recovery (0–55) from
- *    `freshest_overlap_days` per the recovery rules (0–1d not recovered,
- *    2d workable, 3+d/cold recovered) + staleness (0–35) from the average
- *    days-since across its groups (cold counts as 7, each capped at 7) +
- *    a +5 calendar tie-break for today's scheduled label.
- *  - Recovery-type focus (no tagged groups — Rest / Active Recovery /
- *    Conditioning): scales with distinct training days in the last 3 days,
- *    and jumps to at least 92 when NO training focus is recovered (every
- *    option overlaps muscles trained ≤1 day ago) — the 2026-07-07 incident
- *    guardrail baked into the numbers, not just the prompt text.
- * Sorted best-first; ties break alphabetically for determinism.
- */
-export function candidateRecommendations(
-  focuses: FocusRecency[],
-  sessionDates: string[],
-  today: string, // yyyy-mm-dd (app-tz), same value rendered as "Today:" in the facts block
-  calendarLabel: string | null,
-): CandidateRecommendation[] {
-  const todayMid = atLocalMidnight(today);
-  const daysAgo = (date: string) => Math.round((todayMid.getTime() - atLocalMidnight(date).getTime()) / 86_400_000);
-  const trainingDaysLast3 = new Set(sessionDates.filter((d) => daysAgo(d) >= 0 && daysAgo(d) <= 2)).size;
-
-  const training = focuses.filter((f) => f.groups.length > 0);
-  const nothingRecovered =
-    training.length > 0 && training.every((f) => f.freshest_overlap_days !== null && f.freshest_overlap_days <= 1);
-
-  const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
-
-  const scored = focuses.map((f): CandidateRecommendation => {
-    if (f.groups.length === 0) {
-      // Recovery-type focus: worth more the harder the last 3 days were.
-      const reasons = [`${trainingDaysLast3} training day${trainingDaysLast3 === 1 ? "" : "s"} in the last 3 days`];
-      let score = 25 + 20 * Math.min(3, trainingDaysLast3);
-      if (nothingRecovered) {
-        score = Math.max(score, 92);
-        reasons.push("no focus is recovered — every training option overlaps muscles trained <=1 day ago");
-      }
-      return { label: f.label, score: clamp(score), reasons };
-    }
-
-    const fo = f.freshest_overlap_days;
-    // Recovery: how ready this focus's MOST recently trained muscle is.
-    const recovery = fo === null ? 55 : fo <= 1 ? 10 + 5 * fo : fo === 2 ? 40 : 55;
-    // Staleness: rewards the least-recently-trained option among recovered ones.
-    const capped = f.groups.map((g) => Math.min(7, g.days_since ?? 7));
-    const staleness = Math.round((capped.reduce((a, b) => a + b, 0) / capped.length) * 5);
-    const calendar = f.label === calendarLabel ? 5 : 0;
-
-    // Reasons at parent level only — the both-levels detail already lives in the
-    // Focus options facts; the candidate line stays scannable.
-    const parents = f.groups.filter((g) => (PARENT_GROUPS as readonly string[]).includes(g.muscle_group));
-    const reasons = (parents.length > 0 ? parents : f.groups).map(
-      (g) => `${g.muscle_group} ${g.days_since === null ? "cold" : `${g.days_since}d`}`,
-    );
-    return { label: f.label, score: clamp(recovery + staleness + calendar), reasons };
-  });
-
-  return scored.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
-}
-
-/**
- * Cache key for the Today recommendation (feature brief: ai-today-recommendation,
- * Risk #2). The recommendation is a function of four things that change it:
- * the calendar day (rolls at midnight), the latest logged session (a new log
- * inserts a new workout_sessions row), the composer prompt's behavioral version
- * (a deploy that changes the coaching regime must not keep serving the old
- * regime's cached card — coaching-judgment brief, Risk #3), and the active
- * recommendation mode (Adaptive Workout Planning — switching Follow/Adapt/Coach
- * must recompose, not serve the previous mode's card). Fingerprinting all four
- * means a new log, a date rollover, a prompt-regime deploy, OR a mode switch is a
- * natural cache miss — no invalidation hook needed. Same fingerprint on a
- * reload → cache hit → zero model calls (AC #4).
- */
-export function recommendationFingerprint(
-  today: string,
-  latestSessionId: string | null,
-  mode: RecommendationMode,
-): string {
-  return `${today}:${latestSessionId ?? "none"}:p${RECOMMENDATION_PROMPT_VERSION}:m${mode}`;
+  if (anyRecovered) return { recommended: false, reason: null };
+  return {
+    recommended: true,
+    reason:
+      "every muscle group was trained within the last day — recommend rest or active recovery, never a training focus that overlaps recovering muscles",
+  };
 }
 
 export interface RemainingExercise {
-  planned: PlannedExercise;
+  exercise_id: string;
+  target_sets: number;
   setsDone: number;
   setsRemaining: number;
 }
 
 /**
- * What's left of today's program day, across AM/PM mini-sessions (Flow 7).
- * A planned exercise is "remaining" while setsDone < target_sets. Ad-hoc sets
- * for exercises not in the plan (Flow 9) are ignored here.
+ * What's left of the day's recommended workout, across AM/PM mini-sessions (Flow 7,
+ * amended by ADR-0007). "Remaining" re-derives against the DAY'S RECOMMENDATION
+ * (recommended sets − logged sets) instead of a stored plan. The target is the
+ * immutable per-day recommendation pinned by the recommendation route (finding 4),
+ * so this count is stable across the day regardless of a shifting fingerprint. An
+ * exercise is "remaining" while setsDone < target_sets; ad-hoc sets for exercises
+ * not in the recommendation (Flow 9) are ignored. Input order is preserved.
  */
 export function remainingToday(
-  planned: PlannedExercise[],
+  target: { exercise_id: string; target_sets: number }[],
   loggedToday: Pick<LoggedSet, "exercise_id">[],
 ): RemainingExercise[] {
   const done = new Map<string, number>();
   for (const set of loggedToday) {
     done.set(set.exercise_id, (done.get(set.exercise_id) ?? 0) + 1);
   }
-  return [...planned]
-    .sort((a, b) => a.sort_order - b.sort_order)
-    .map((p) => {
-      const setsDone = done.get(p.exercise_id) ?? 0;
-      return { planned: p, setsDone, setsRemaining: Math.max(0, p.target_sets - setsDone) };
+  return target
+    .map((t) => {
+      const setsDone = done.get(t.exercise_id) ?? 0;
+      return {
+        exercise_id: t.exercise_id,
+        target_sets: t.target_sets,
+        setsDone,
+        setsRemaining: Math.max(0, t.target_sets - setsDone),
+      };
     })
     .filter((r) => r.setsRemaining > 0);
 }
@@ -353,6 +232,10 @@ export interface NextPrTarget {
  *  - Weighted movement (not bodyweight, has a load): same reps, +2.5 lbs.
  *  - Bodyweight / no load (incl. duration units like plank-seconds): +1 rep/second,
  *    any added load unchanged.
+ *
+ * Stays deterministic under ADR-0007 (finding 1): depends on neither dropped table
+ * (pr_bests + exercises only), so progression remains a tested pure function fed to
+ * the composer as the hard progression anchor the model must respect.
  */
 export function nextPrTargets(bests: PrBest[], exercises: Exercise[]): NextPrTarget[] {
   const byId = new Map(exercises.map((e) => [e.id, e]));

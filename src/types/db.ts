@@ -11,35 +11,11 @@ export interface Exercise {
   unit: ExerciseUnit;
   /** Muscle groups worked (primary + secondary); empty = cardio/none. Feeds per-group recency. */
   muscle_groups: string[];
+  /** One rest + cue per exercise, flattened from the retired program (migration 0006,
+   *  ADR-0007). Composition hints for the recommendation composer; NULL = never planned. */
+  default_rest_seconds: number | null;
+  default_cue: string | null;
   created_at: string;
-}
-
-export interface Program {
-  id: string;
-  name: string;
-  is_active: boolean;
-}
-
-export interface ProgramDay {
-  id: string;
-  program_id: string;
-  day_number: number; // 1–7
-  label: string;
-  notes: string | null; // recovery/conditioning days have notes, no planned lifts
-}
-
-export interface PlannedExercise {
-  id: string;
-  program_day_id: string;
-  exercise_id: string;
-  target_sets: number;
-  /** Value in the exercise's unit. NULL = AMRAP ("max reps"). */
-  target_reps: number | null;
-  /** For bodyweight exercises this is ADDED load in lbs (NULL/0 = pure BW). */
-  target_weight: number | null;
-  rest_seconds: number | null;
-  notes: string | null; // tempo cues: "slow negatives + 10-sec hold"
-  sort_order: number;
 }
 
 export type SessionPart = "am" | "pm" | null;
@@ -69,14 +45,6 @@ export interface EquipmentProfile {
   name: string;
   items: string[];
   is_active: boolean;
-}
-
-/** Singleton settings row (id = 1). recommendation_mode is one of the values in
- *  src/lib/recommendation-mode.ts — see migration 0005. */
-export interface AppSettings {
-  id: number;
-  recommendation_mode: string;
-  updated_at: string;
 }
 
 /** Row shape of the pr_bests view (derived — never a table). */

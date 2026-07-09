@@ -32,7 +32,7 @@ describe("exercise-list cache", () => {
   it("round-trips the canonical list", () => {
     const s = fakeStorage();
     const list = [
-      { id: "1", name: "Push-up", aliases: [], is_bodyweight: true, unit: "reps", muscle_groups: [], created_at: "" },
+      { id: "1", name: "Push-up", aliases: [], is_bodyweight: true, unit: "reps", muscle_groups: [], default_rest_seconds: null, default_cue: null, created_at: "" },
     ];
     cacheExercises(list as Exercise[], s);
     expect(getCachedExercises(s)).toEqual(list);

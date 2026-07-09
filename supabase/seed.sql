@@ -2,93 +2,53 @@
 -- Source of truth: c:/local-instance/ais/projects/any-time-workout/program-source.md (2026-07-05)
 -- Owner-confirmed aliases: elevated push-up → Incline Push-up; dips → Tricep Dip (Flags A/B).
 -- Baseline history seeding: owner's call (Flag C) — last actuals as one week of sessions.
+--
+-- ADR-0007 (retire the stored program): the weekly program (programs / program_days /
+-- planned_exercises) and app_settings (recommendation modes) are gone — the app now
+-- generates each day's recommendation AI-first from history + recovery. This seed keeps
+-- the exercise catalog, the baseline log history, and equipment; the per-exercise
+-- rest/cue DEFAULTS below are the flattened remains of the old plan (migration 0006).
 
 begin;
 
 -- ---------- canonical exercises ----------
 -- muscle_groups: fixed TWO-LEVEL vocabulary (migration 0004) — sub-groups roll up
 -- to the 10 parents in-app; muscles without a meaningful sub-division stay at the
--- parent level; empty = cardio/none. Feeds app-computed per-muscle-group + per-focus
--- recency (recency-first feature). Source of truth: src/lib/muscle-groups.ts.
-insert into exercises (name, aliases, is_bodyweight, unit, muscle_groups) values
-  ('Incline Push-up',       array['incline pushup','elevated push-up','elevated pushup'], true,  'reps',    array['chest_upper','triceps','shoulders_front']),
-  ('Push-up',               array['pushup','regular push-up'],                            true,  'reps',    array['chest_mid','triceps','shoulders_front']),
-  ('Pull-up',               array['pullup'],                                              true,  'reps',    array['back_lats','biceps']),
-  ('Chin-up',               array['chinup'],                                              true,  'reps',    array['back_lats','biceps']),
-  ('Barbell Row',           array['bb row'],                                              false, 'reps',    array['back_upper','biceps']),
-  ('Overhead Press',        array['OHP'],                                                 false, 'reps',    array['shoulders_front','triceps']),
-  ('DB Shoulder Press',     array['dumbbell shoulder press'],                             false, 'reps',    array['shoulders_front','triceps']),
-  ('Lateral Raise',         array['lateral raises'],                                      false, 'reps',    array['shoulders_side']),
-  ('Plank',                 array[]::text[],                                              true,  'seconds', array['core']),
-  ('Hanging Leg Raise',     array[]::text[],                                              true,  'reps',    array['core_lower']),
-  ('Squat',                 array['squats'],                                              false, 'reps',    array['quads','glutes']),
-  ('Romanian Deadlift',     array['RDL','romanian dead lift'],                            false, 'reps',    array['hamstrings','glutes','back_lower']),
-  ('Deadlift',              array[]::text[],                                              false, 'reps',    array['back_lower','hamstrings','glutes']),
-  ('Lunge',                 array['lunges'],                                              false, 'reps',    array['quads','glutes']),
-  ('Step-up',               array['step ups'],                                            false, 'reps',    array['quads','glutes']),
-  ('Calf Raise',            array['calf raises'],                                         true,  'reps',    array['calves']),
-  ('Barbell Curl',          array['bb curl'],                                             false, 'reps',    array['biceps']),
-  ('Tricep Dip',            array['dips'],                                                true,  'reps',    array['triceps','chest_lower']),
-  ('Floor Press',           array['floor press'],                                         false, 'reps',    array['chest_mid','triceps','shoulders_front']),
-  ('Jump Squat',            array['jump squats'],                                         true,  'reps',    array['quads','glutes']),
-  ('Walk / Mobility',       array['walk','mobility'],                                     true,  'minutes', array[]::text[]),
-  ('Conditioning Intervals',array['intervals'],                                           true,  'minutes', array[]::text[])
--- on conflict: migration 0002 runs before seed on a fresh reset and inserts
--- Floor Press + Jump Squat; skip them here rather than aborting the seed txn.
-on conflict do nothing;
-
--- ---------- program ----------
-insert into programs (name, is_active) values ('6-Day Split v1', true);
-
-insert into program_days (program_id, day_number, label, notes)
-select p.id, d.n, d.label, d.notes
-from programs p,
-(values
-  (1, 'Upper Body — Chest + Back', '+ 20-30 min walk, any time of day.'),
-  (2, 'Lower Body', '+ 20-30 min walk, any time of day.'),
-  (3, 'Arms + Shoulders', '+ 20-30 min walk, any time of day.'),
-  (4, 'Active Recovery', 'Walk / Mobility, 20–30 min'),
-  (5, 'Full Body — Power Day', '+ 20-30 min walk, any time of day.'),
-  (6, 'Conditioning', 'Intervals 30s work / 60s rest ×10 (~15 min) OR incline walk 20 min'),
-  (7, 'Rest', 'Full rest — recovery')
-) as d(n, label, notes)
-where p.name = '6-Day Split v1';
-
--- planned exercises (helper: day n, exercise name, sets, reps, weight, rest s, notes, order)
-insert into planned_exercises (program_day_id, exercise_id, target_sets, target_reps, target_weight, rest_seconds, notes, sort_order)
-select pd.id, e.id, v.sets, v.reps, v.weight, v.rest, v.notes, v.ord
-from (values
-  -- Day 1  (Floor Press added 2026-07-06 at slot 3 — chest volume + uses the barbell)
-  (1, 'Incline Push-up',   4, 12,   null::numeric, 120, 'BW or +10 lbs',                 1),
-  (1, 'Pull-up',           4, 8,    null,          120, null,                            2),
-  (1, 'Floor Press',       4, 9,    32.5,          120, 'added 2026-07-06; adjust to 1-2 RIR', 3),
-  (1, 'Barbell Row',       4, 12,   32.5,          180, 'slow',                          4),
-  (1, 'Overhead Press',    3, 12,   25,            120, null,                            5),
-  (1, 'Lateral Raise',     4, 12,   12.5,          60,  null,                            6),
-  (1, 'Plank',             3, 60,   null,          60,  null,                            7),
-  -- Day 2
-  (2, 'Squat',             4, 14,   17.5,          120, null,                            1),
-  (2, 'Romanian Deadlift', 4, 12,   32.5,          120, null,                            2),
-  (2, 'Lunge',             3, 12,   10,            120, null,                            3),
-  (2, 'Calf Raise',        4, 20,   10,            60,  'BW +10',                        4),
-  -- Day 3
-  (3, 'Chin-up',           4, 7,    null,          180, null,                            1),
-  (3, 'DB Shoulder Press', 4, 12,   15,            120, null,                            2),
-  (3, 'Barbell Curl',      3, 12,   17.5,          120, 'slow negatives',                3),
-  (3, 'Tricep Dip',        3, 12,   10,            120, 'BW +10',                        4),
-  (3, 'Lateral Raise',     4, 12,   12.5,          60,  null,                            5),
-  (3, 'Hanging Leg Raise', 3, 12,   null,          60,  null,                            6),
-  -- Day 5  (Jump Squat added 2026-07-06 at slot 1 — explosive intent before fatigue)
-  (5, 'Jump Squat',        3, 5,    null,          120, 'explosive intent, first slot',  1),
-  (5, 'Deadlift',          4, 9,    32.5,          180, 'slow negatives + 10-sec hold',  2),
-  (5, 'Push-up',           3, null, null,          120, 'max reps (AMRAP)',              3),
-  (5, 'Step-up',           3, 12,   10,            120, 'weight if available',           4),
-  (5, 'Barbell Row',       3, 12,   32.5,          120, 'slow',                          5),
-  (5, 'Plank',             3, 60,   null,          60,  'or Hanging Leg Raise ×12',      6)
-) as v(day_n, ex_name, sets, reps, weight, rest, notes, ord)
-join program_days pd on pd.day_number = v.day_n
-join programs p      on p.id = pd.program_id and p.name = '6-Day Split v1'
-join exercises e     on lower(e.name) = lower(v.ex_name);
+-- parent level; empty = cardio/none. Feeds app-computed per-muscle-group recency.
+-- Source of truth: src/lib/muscle-groups.ts.
+-- default_rest_seconds / default_cue: one rest + cue per exercise, flattened from the
+-- retired program by first-planned-appearance (migration 0006, ADR-0007 finding 6).
+-- Composition hints for the recommendation composer; NULL = cardio/mobility (unplanned).
+insert into exercises (name, aliases, is_bodyweight, unit, muscle_groups, default_rest_seconds, default_cue) values
+  ('Incline Push-up',       array['incline pushup','elevated push-up','elevated pushup'], true,  'reps',    array['chest_upper','triceps','shoulders_front'], 120,  'BW or +10 lbs'),
+  ('Push-up',               array['pushup','regular push-up'],                            true,  'reps',    array['chest_mid','triceps','shoulders_front'],   120,  'max reps (AMRAP)'),
+  ('Pull-up',               array['pullup'],                                              true,  'reps',    array['back_lats','biceps'],                      120,  null),
+  ('Chin-up',               array['chinup'],                                              true,  'reps',    array['back_lats','biceps'],                      180,  null),
+  ('Barbell Row',           array['bb row'],                                              false, 'reps',    array['back_upper','biceps'],                     180,  'slow'),
+  ('Overhead Press',        array['OHP'],                                                 false, 'reps',    array['shoulders_front','triceps'],               120,  null),
+  ('DB Shoulder Press',     array['dumbbell shoulder press'],                             false, 'reps',    array['shoulders_front','triceps'],               120,  null),
+  ('Lateral Raise',         array['lateral raises'],                                      false, 'reps',    array['shoulders_side'],                          60,   null),
+  ('Plank',                 array[]::text[],                                              true,  'seconds', array['core'],                                    60,   null),
+  ('Hanging Leg Raise',     array[]::text[],                                              true,  'reps',    array['core_lower'],                              60,   null),
+  ('Squat',                 array['squats'],                                              false, 'reps',    array['quads','glutes'],                          120,  null),
+  ('Romanian Deadlift',     array['RDL','romanian dead lift'],                            false, 'reps',    array['hamstrings','glutes','back_lower'],        120,  null),
+  ('Deadlift',              array[]::text[],                                              false, 'reps',    array['back_lower','hamstrings','glutes'],        180,  'slow negatives + 10-sec hold'),
+  ('Lunge',                 array['lunges'],                                              false, 'reps',    array['quads','glutes'],                          120,  null),
+  ('Step-up',               array['step ups'],                                            false, 'reps',    array['quads','glutes'],                          120,  'weight if available'),
+  ('Calf Raise',            array['calf raises'],                                         true,  'reps',    array['calves'],                                  60,   'BW +10'),
+  ('Barbell Curl',          array['bb curl'],                                             false, 'reps',    array['biceps'],                                  120,  'slow negatives'),
+  ('Tricep Dip',            array['dips'],                                                true,  'reps',    array['triceps','chest_lower'],                   120,  'BW +10'),
+  ('Floor Press',           array['floor press'],                                         false, 'reps',    array['chest_mid','triceps','shoulders_front'],   120,  'added 2026-07-06; adjust to 1-2 RIR'),
+  ('Jump Squat',            array['jump squats'],                                         true,  'reps',    array['quads','glutes'],                          120,  'explosive intent, first slot'),
+  ('Walk / Mobility',       array['walk','mobility'],                                     true,  'minutes', array[]::text[],                                  null, null),
+  ('Conditioning Intervals',array['intervals'],                                           true,  'minutes', array[]::text[],                                  null, null)
+-- on conflict: migration 0002 inserts Floor Press + Jump Squat before seed on a fresh
+-- reset (without the default_ columns, which 0006 adds later). Update the two default
+-- columns so those pre-existing rows still get their flattened rest/cue; everything else
+-- is left as-is.
+on conflict (lower(name)) do update
+  set default_rest_seconds = excluded.default_rest_seconds,
+      default_cue          = excluded.default_cue;
 
 -- ---------- baseline history (Flag C: owner's last actuals as one seed week) ----------
 -- Dated across the week before build (2026-06-29 .. 2026-07-03).

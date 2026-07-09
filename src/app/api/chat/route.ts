@@ -1,8 +1,13 @@
 import { openai } from "@/lib/openai/client";
-import { candidateRecommendations, focusRecency } from "@/lib/facts";
+import { remainingToday } from "@/lib/facts";
 import { RECOMMENDATION_MODEL } from "@/lib/openai/models";
-import { buildFactsBlock, chatSystemPrompt, formatHistorySummary } from "@/lib/openai/prompts";
-import { getChatContext } from "@/lib/supabase/queries";
+import {
+  buildFactsBlock,
+  chatSystemPrompt,
+  formatHistorySummary,
+  type FactsRemainingLine,
+} from "@/lib/openai/prompts";
+import { getChatContext, resolveLiftIds } from "@/lib/supabase/queries";
 import { ChatRequestSchema } from "@/lib/validators";
 import { fail, failFrom } from "@/lib/http";
 
@@ -14,13 +19,13 @@ export const dynamic = "force-dynamic";
  * GPT-5.4, streamed as plain text (NFR: < 2s to first token).
  *
  * ADR-0002: grounding is prompt-stuffed (facts + compact history), not tool-use.
- * ADR-0004 / rule 4: every number in the prompt comes from lib/facts; the
- * system prompt forbids the model from recomputing.
+ * ADR-0004 / rule 4: every number in the prompt comes from lib/facts; the system
+ * prompt forbids the model from recomputing. ADR-0007: there is no stored program —
+ * "remaining today" re-derives against the day's pinned recommendation, and the
+ * recovery gate is a hard computed fact.
  *
- * Answer format: streamed plain text, NOT RecommendationSchema JSON — streaming
- * a JSON body would forfeit the first-token latency target, and challenge #7's
- * Structured Outputs requirement covers JSON the app re-consumes (which chat
- * answers are not; they render as text). /api/parse keeps the schema path.
+ * Answer format: streamed plain text, NOT JSON — streaming a JSON body would
+ * forfeit the first-token latency target; /api/parse keeps the schema path.
  */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
@@ -32,33 +37,38 @@ export async function POST(req: Request) {
 
   try {
     const ctx = await getChatContext();
-    const exerciseNames = new Map(ctx.exercises.map((e) => [e.id, e.name]));
-    const plannedById = new Map(ctx.planned.map((p) => [p.id, p]));
+    const nameById = new Map(ctx.exercises.map((e) => [e.id, e.name]));
 
-    const focus_recency = focusRecency(ctx.program_days, ctx.muscle_recency);
+    // "Remaining today" re-derives against the day's pinned recommendation
+    // (recommended sets − logged sets today), computed by lib/facts — never inferred.
+    const pinnedLifts = ctx.pinned?.payload.lifts ?? null;
+    const resolved = resolveLiftIds(pinnedLifts, ctx.exercises);
+    const target = resolved
+      .filter((l) => l.exercise_id !== null)
+      .map((l) => ({ exercise_id: l.exercise_id as string, target_sets: l.target_sets }));
+    const remaining = remainingToday(target, ctx.logged_today);
+    const liftById = new Map(resolved.filter((l) => l.exercise_id).map((l) => [l.exercise_id as string, l]));
+    const remainingLines: FactsRemainingLine[] = remaining.map((r) => {
+      const l = liftById.get(r.exercise_id)!;
+      return {
+        exercise_name: l.exercise_name,
+        unit: l.unit,
+        sets_remaining: r.setsRemaining,
+        sets_done: r.setsDone,
+        target_sets: r.target_sets,
+        target_reps: l.target_reps,
+        target_weight: l.target_weight,
+        rest_seconds: l.rest_seconds,
+        notes: l.cue,
+      };
+    });
 
     const factsBlock = buildFactsBlock({
       today: ctx.today,
-      day_number: ctx.day_number,
-      day_label: ctx.day?.label ?? null,
-      day_notes: ctx.day?.notes ?? null,
       days_since_last_workout: ctx.days_since_last_workout,
       detraining: ctx.detraining,
-      has_planned_lifts: ctx.planned.length > 0,
-      remaining: ctx.remaining.map((r) => {
-        const p = plannedById.get(r.planned.id);
-        return {
-          exercise_name: p?.exercise.name ?? exerciseNames.get(r.planned.exercise_id) ?? "unknown",
-          unit: p?.exercise.unit ?? "reps",
-          sets_remaining: r.setsRemaining,
-          sets_done: r.setsDone,
-          target_sets: r.planned.target_sets,
-          target_reps: r.planned.target_reps,
-          target_weight: r.planned.target_weight,
-          rest_seconds: r.planned.rest_seconds,
-          notes: r.planned.notes,
-        };
-      }),
+      // Only surface remaining when there IS a composed workout to be remaining OF.
+      remaining: pinnedLifts ? remainingLines : undefined,
       pr_bests: ctx.pr_bests.map((p) => ({
         exercise_name: p.exercise_name,
         is_bodyweight: p.is_bodyweight,
@@ -68,34 +78,23 @@ export async function POST(req: Request) {
         achieved_on: p.achieved_on,
       })),
       next_pr_targets: ctx.next_targets.map((t) => ({
-        exercise_name: exerciseNames.get(t.exercise_id) ?? "unknown",
+        exercise_name: nameById.get(t.exercise_id) ?? "unknown",
         target_reps: t.target_reps,
         target_weight: t.target_weight,
         rule_applied: t.rule_applied,
       })),
       history_summary: formatHistorySummary(ctx.recent_sessions),
-      muscle_recency: ctx.muscle_recency.map((m) => ({
-        muscle_group: m.muscle_group,
-        days_since: m.days_since,
-      })),
-      // Same per-focus overlap facts + the SAME scored candidate list the card
-      // composer receives, plus the card's own suggestion (advisory): card and
-      // chat reason from shared ground truth and shared candidates, so they
-      // weigh the same options for the same facts.
-      focus_recency,
-      candidates: candidateRecommendations(
-        focus_recency,
-        ctx.recent_sessions.map((s) => s.date),
-        ctx.today,
-        ctx.day?.label ?? null,
-      ),
-      card_suggestion: ctx.card_suggestion,
+      muscle_recency: ctx.muscle_recency.map((m) => ({ muscle_group: m.muscle_group, days_since: m.days_since })),
+      recovery_required: ctx.recovery.recommended ? { reason: ctx.recovery.reason ?? "" } : null,
+      // The day's pinned recommendation is injected as the advisory card suggestion
+      // so chat sees what the home screen says without being bound to it.
+      card_suggestion: ctx.pinned ? { headline: ctx.pinned.payload.headline, reason: ctx.pinned.payload.reason } : null,
       equipment: ctx.equipment,
     });
 
     const events = await openai().responses.create({
       model: RECOMMENDATION_MODEL,
-      instructions: chatSystemPrompt(factsBlock, ctx.recommendation_mode),
+      instructions: chatSystemPrompt(factsBlock),
       input: [...history, { role: "user" as const, content: question }],
       stream: true,
     });

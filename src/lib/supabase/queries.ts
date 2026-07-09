@@ -1,40 +1,28 @@
 import "server-only";
 import { supabaseServer } from "./server";
-import { appToday, dayNumberFor, toIsoDate } from "@/lib/dates";
+import { appToday, toIsoDate } from "@/lib/dates";
 import {
   daysSinceLastWorkout,
   isDetraining,
   muscleGroupRecency,
   nextPrTargets,
-  recommendationFingerprint,
-  remainingToday,
+  recoveryRecommended,
   type MuscleGroupRecency,
-  type RemainingExercise,
+  type RecoveryRecommendation,
 } from "@/lib/facts";
 import type { HistorySession } from "@/lib/openai/prompts";
-import {
-  asRecommendationMode,
-  DEFAULT_RECOMMENDATION_MODE,
-  type RecommendationMode,
-} from "@/lib/recommendation-mode";
-import type { Exercise, PlannedExercise, PrBest, ProgramDay, SessionPart } from "@/types/db";
+import type { TodayRecommendation, TodayRecommendationLift } from "@/lib/openai/schemas";
+import type { Exercise, PrBest, SessionPart } from "@/types/db";
 
 /**
- * Server-side data gathering shared by /api/program/today and /api/chat.
- * Everything numeric flows through lib/facts (ADR-0004) — this module only
- * fetches rows and shapes them.
+ * Server-side data gathering shared by /api/recommendation and /api/chat.
+ * Everything numeric flows through lib/facts (ADR-0004 / ADR-0007) — this module
+ * only fetches rows and shapes them. There is no stored program: the day's
+ * recommendation is AI-generated and pinned immutably per calendar day.
  */
-
-export interface PlannedWithExercise extends PlannedExercise {
-  exercise: Pick<Exercise, "id" | "name" | "unit" | "is_bodyweight">;
-}
 
 export interface TodayContext {
   today: string;
-  day_number: number;
-  day: Pick<ProgramDay, "id" | "label" | "notes"> | null;
-  planned: PlannedWithExercise[];
-  remaining: RemainingExercise[];
   days_since_last_workout: number | null;
   detraining: boolean;
   last_workout_date: string | null;
@@ -44,79 +32,25 @@ function throwIf(error: { message: string } | null): void {
   if (error) throw new Error(error.message);
 }
 
-/**
- * The active recommendation mode (Adaptive Workout Planning). Singleton row
- * app_settings.id = 1 (migration 0005). A missing row or an unrecognized value
- * falls back to the default — the card/chat must never fail to compose over a
- * settings read, so this is best-effort and always returns a valid mode.
- */
-export async function getRecommendationMode(): Promise<RecommendationMode> {
-  const sb = supabaseServer();
-  const { data, error } = await sb
-    .from("app_settings")
-    .select("recommendation_mode")
-    .eq("id", 1)
-    .maybeSingle();
-  if (error || !data) return DEFAULT_RECOMMENDATION_MODE;
-  return asRecommendationMode(data.recommendation_mode);
-}
-
-/** Set the active recommendation mode (PUT /api/recommendation-mode). Upserts the
- *  singleton so a fresh DB with no seeded row still self-heals to the chosen mode. */
-export async function setRecommendationMode(mode: RecommendationMode): Promise<void> {
-  const sb = supabaseServer();
-  const { error } = await sb
-    .from("app_settings")
-    .upsert({ id: 1, recommendation_mode: mode, updated_at: new Date().toISOString() }, { onConflict: "id" });
-  throwIf(error);
-}
-
+/** The deterministic base facts every consumer needs: today's date + recency. */
 export async function getTodayContext(now = appToday()): Promise<TodayContext> {
   const sb = supabaseServer();
   const today = toIsoDate(now);
-  const day_number = dayNumberFor(now);
 
-  const [{ data: day, error: dayErr }, { data: lastSession, error: lastErr }, { data: todaySessions, error: sessErr }] =
-    await Promise.all([
-      sb
-        .from("program_days")
-        .select("id, label, notes, programs!inner(is_active)")
-        .eq("day_number", day_number)
-        .eq("programs.is_active", true)
-        .maybeSingle(),
-      sb.from("workout_sessions").select("date").order("date", { ascending: false }).limit(1).maybeSingle(),
-      sb.from("workout_sessions").select("id").eq("date", today),
-    ]);
-  throwIf(dayErr);
+  const { data: lastSession, error: lastErr } = await sb
+    .from("workout_sessions")
+    .select("date")
+    .order("date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
   throwIf(lastErr);
-  throwIf(sessErr);
-
-  let planned: PlannedWithExercise[] = [];
-  if (day) {
-    const { data, error } = await sb
-      .from("planned_exercises")
-      .select("*, exercise:exercises(id, name, unit, is_bodyweight)")
-      .eq("program_day_id", day.id)
-      .order("sort_order");
-    throwIf(error);
-    planned = (data ?? []) as unknown as PlannedWithExercise[];
-  }
-
-  let loggedTodaySets: { exercise_id: string }[] = [];
-  const sessionIds = (todaySessions ?? []).map((s) => s.id);
-  if (sessionIds.length > 0) {
-    const { data, error } = await sb.from("logged_sets").select("exercise_id").in("session_id", sessionIds);
-    throwIf(error);
-    loggedTodaySets = data ?? [];
-  }
 
   const last_workout_date = lastSession?.date ?? null;
   let days_since = daysSinceLastWorkout(last_workout_date ? [{ date: last_workout_date }] : [], now);
 
-  // Defense-in-depth (feature brief AC #2): with app-tz "today" a negative recency
-  // should be impossible; if one appears it means data-integrity drift (a session
-  // dated after the app's today), not a display case. Clamp to 0 and log — never
-  // surface a negative to any consumer.
+  // Defense-in-depth (timezone-correct-today AC #2): with app-tz "today" a negative
+  // recency should be impossible; if one appears it means data-integrity drift (a
+  // session dated after the app's today), not a display case. Clamp to 0 and log.
   if (days_since !== null && days_since < 0) {
     console.warn(
       `[data-integrity] days_since_last_workout computed negative (${days_since}): ` +
@@ -127,10 +61,6 @@ export async function getTodayContext(now = appToday()): Promise<TodayContext> {
 
   return {
     today,
-    day_number,
-    day: day ? { id: day.id, label: day.label, notes: day.notes } : null,
-    planned,
-    remaining: remainingToday(planned, loggedTodaySets),
     days_since_last_workout: days_since,
     detraining: isDetraining(days_since),
     last_workout_date,
@@ -142,120 +72,55 @@ export interface ActiveEquipment {
   items: string[];
 }
 
-export interface ChatContext extends TodayContext {
-  pr_bests: PrBest[];
-  next_targets: ReturnType<typeof nextPrTargets>;
-  exercises: Exercise[];
-  recent_sessions: {
-    date: string;
-    part: SessionPart;
-    sets: { exercise_name: string; reps: number; weight: number | null; unit: string; is_bodyweight: boolean }[];
-  }[];
-  /** Per-muscle-group recency for adaptive readjustment (computed, ADR-0004). */
-  muscle_recency: MuscleGroupRecency[];
-  /** The active equipment profile — context for equipment-aware adaptation (null if none). */
-  equipment: ActiveEquipment | null;
-  /** Program-day labels + muscle-group unions — feeds focusRecency so chat shares
-   *  the card's per-focus overlap facts (card/chat consistency, recency-first brief). */
-  program_days: Pick<ProgramDayCatalogEntry, "label" | "muscle_groups">[];
-  /** Today's cached card suggestion for the CURRENT fingerprint, or null if none
-   *  has been composed yet — injected into chat so it can't contradict the card. */
-  card_suggestion: { headline: string; reason: string } | null;
-  /** Active recommendation mode — drives the chat coaching policy (Adaptive
-   *  Workout Planning) and the card-suggestion fingerprint lookup below. */
-  recommendation_mode: RecommendationMode;
+/** A pinned lift with its resolved catalog id (null = the name matched no exercise). */
+export interface ResolvedLift extends TodayRecommendationLift {
+  exercise_id: string | null;
 }
 
-export interface SuggestedLift {
-  exercise_name: string;
-  target_sets: number;
-  target_reps: number | null;
-  target_weight: number | null;
-  unit: string;
-  sort_order: number;
+/** Resolve each recommendation lift's exercise_name to its catalog id (exact match —
+ *  the composer picks names verbatim from the catalog enum). */
+export function resolveLiftIds(
+  lifts: TodayRecommendationLift[] | null,
+  exercises: Pick<Exercise, "id" | "name">[],
+): ResolvedLift[] {
+  if (!lifts) return [];
+  const idByName = new Map(exercises.map((e) => [e.name, e.id]));
+  return lifts.map((l) => ({ ...l, exercise_id: idByName.get(l.exercise_name) ?? null }));
 }
 
-export interface ProgramDayCatalogEntry {
-  day_number: number;
-  label: string;
-  notes: string | null;
-  planned: SuggestedLift[];
-  /** Union of muscle groups this day's planned lifts train (as-tagged; roll-up to
-   *  parents happens in lib/facts). Feeds per-focus overlap facts (ADR-0004). */
-  muscle_groups: string[];
+/** The day's pinned recommendation (ADR-0007 finding 4 — immutable per rec_date). */
+export interface PinnedRecommendation {
+  payload: TodayRecommendation;
+  prompt_version: number | null;
 }
 
-export interface RecommendationContext {
-  base: TodayContext;
-  /** Per-muscle-group recency for the recommendation reason (computed, ADR-0004). */
-  muscle_recency: MuscleGroupRecency[];
-  /** Every day of the active program + its planned lifts — the allowed focuses
-   *  (distinct labels) and the source for "Suggested lifts" on divergence. */
-  program_days: ProgramDayCatalogEntry[];
-  /** Latest logged session id — part of the cache fingerprint (Risk #2). */
-  latest_session_id: string | null;
-  /** Active recommendation mode — folds into the fingerprint AND the composer
-   *  prompt (Adaptive Workout Planning). */
-  recommendation_mode: RecommendationMode;
-  /** Compact history lines for the prompt (most recent first). */
-  history: HistorySession[];
-}
-
-/**
- * Context for GET /api/recommendation (feature brief: ai-today-recommendation).
- * Reuses getTodayContext for the deterministic today facts, then adds per-group
- * recency, the full program-day catalog (allowed focuses + suggested-lifts
- * lookup), and the latest session id for the cache fingerprint. Everything
- * numeric still flows through lib/facts (ADR-0004); this only fetches + shapes.
- */
-export async function getRecommendationContext(now = appToday()): Promise<RecommendationContext> {
+async function getPinnedRecommendation(recDate: string): Promise<PinnedRecommendation | null> {
   const sb = supabaseServer();
-  const base = await getTodayContext(now);
+  const { data } = await sb
+    .from("daily_recommendations")
+    .select("payload, prompt_version")
+    .eq("rec_date", recDate)
+    .maybeSingle();
+  if (!data?.payload) return null;
+  return { payload: data.payload as TodayRecommendation, prompt_version: data.prompt_version ?? null };
+}
 
-  const [
-    { data: sessions, error: sessErr },
-    { data: days, error: daysErr },
-    { data: latest, error: latestErr },
-    recommendation_mode,
-  ] = await Promise.all([
-    sb
-      .from("workout_sessions")
-      .select("id, date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight, muscle_groups))")
-      .order("date", { ascending: false })
-      .limit(10),
-    sb
-      .from("program_days")
-      .select(
-        "day_number, label, notes, programs!inner(is_active), planned_exercises(target_sets, target_reps, target_weight, sort_order, exercise:exercises(name, unit, muscle_groups))",
-      )
-      .eq("programs.is_active", true)
-      .order("day_number"),
-    sb.from("workout_sessions").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    getRecommendationMode(),
-  ]);
-  throwIf(sessErr);
-  throwIf(daysErr);
-  throwIf(latestErr);
+type SessionRow = {
+  date: string;
+  part: SessionPart;
+  logged_sets: {
+    reps: number;
+    weight: number | null;
+    exercise: { name: string; unit: string; is_bodyweight: boolean; muscle_groups: string[] } | null;
+  }[];
+};
 
-  type SessionRow = {
-    date: string;
-    part: SessionPart;
-    logged_sets: {
-      reps: number;
-      weight: number | null;
-      exercise: { name: string; unit: string; is_bodyweight: boolean; muscle_groups: string[] } | null;
-    }[];
-  };
-  const sessionRows = (sessions ?? []) as unknown as SessionRow[];
-
-  // Fold each session into the union of muscle groups it trained. Overlap is
-  // computed here (ADR-0004), never inferred by the model.
-  const recencySessions = sessionRows.map((s) => ({
-    date: s.date,
-    muscle_groups: [...new Set(s.logged_sets.flatMap((ls) => ls.exercise?.muscle_groups ?? []))],
-  }));
-
-  const history: HistorySession[] = sessionRows.map((s) => ({
+/** Fold session rows into (a) compact history lines and (b) per-session muscle-group unions. */
+function shapeSessions(rows: SessionRow[]): {
+  history: HistorySession[];
+  recencySessions: { date: string; muscle_groups: string[] }[];
+} {
+  const history: HistorySession[] = rows.map((s) => ({
     date: s.date,
     part: s.part,
     sets: s.logged_sets
@@ -268,46 +133,107 @@ export async function getRecommendationContext(now = appToday()): Promise<Recomm
         is_bodyweight: ls.exercise!.is_bodyweight,
       })),
   }));
-
-  type DayRow = {
-    day_number: number;
-    label: string;
-    notes: string | null;
-    planned_exercises: {
-      target_sets: number;
-      target_reps: number | null;
-      target_weight: number | null;
-      sort_order: number;
-      exercise: { name: string; unit: string; muscle_groups: string[] } | null;
-    }[];
-  };
-  const program_days: ProgramDayCatalogEntry[] = ((days ?? []) as unknown as DayRow[]).map((d) => ({
-    day_number: d.day_number,
-    label: d.label,
-    notes: d.notes,
-    planned: d.planned_exercises
-      .filter((p) => p.exercise !== null)
-      .map((p) => ({
-        exercise_name: p.exercise!.name,
-        target_sets: p.target_sets,
-        target_reps: p.target_reps,
-        target_weight: p.target_weight,
-        unit: p.exercise!.unit,
-        sort_order: p.sort_order,
-      }))
-      .sort((a, b) => a.sort_order - b.sort_order),
-    // Union over the day's planned lifts (as-tagged; lib/facts rolls up to parents).
-    muscle_groups: [...new Set(d.planned_exercises.flatMap((p) => p.exercise?.muscle_groups ?? []))],
+  // Overlap is computed here (ADR-0004), never inferred by the model.
+  const recencySessions = rows.map((s) => ({
+    date: s.date,
+    muscle_groups: [...new Set(s.logged_sets.flatMap((ls) => ls.exercise?.muscle_groups ?? []))],
   }));
+  return { history, recencySessions };
+}
+
+/** Today's logged sets (exercise_id only) — for the remaining-vs-recommendation count. */
+async function getLoggedToday(today: string): Promise<{ exercise_id: string }[]> {
+  const sb = supabaseServer();
+  const { data: sessions, error: sessErr } = await sb.from("workout_sessions").select("id").eq("date", today);
+  throwIf(sessErr);
+  const ids = (sessions ?? []).map((s) => s.id);
+  if (ids.length === 0) return [];
+  const { data, error } = await sb.from("logged_sets").select("exercise_id").in("session_id", ids);
+  throwIf(error);
+  return data ?? [];
+}
+
+export interface RecommendationContext {
+  base: TodayContext;
+  muscle_recency: MuscleGroupRecency[];
+  recovery: RecoveryRecommendation;
+  history: HistorySession[];
+  pr_bests: PrBest[];
+  next_targets: ReturnType<typeof nextPrTargets>;
+  /** Full catalog — the allowed exercises the composer may program (with defaults). */
+  exercises: Exercise[];
+  equipment: ActiveEquipment | null;
+  /** Today's logged sets — subtracted from the pinned target for the remaining count. */
+  logged_today: { exercise_id: string }[];
+  /** The day's already-pinned recommendation, or null if none composed yet. */
+  pinned: PinnedRecommendation | null;
+}
+
+/**
+ * Context for GET /api/recommendation (ADR-0007). Provides the raw materials the
+ * composer needs (recency, history, PR targets, catalog, equipment) plus the
+ * recovery gate, today's logged sets, and any already-pinned recommendation.
+ * Everything numeric flows through lib/facts; this only fetches + shapes.
+ */
+export async function getRecommendationContext(now = appToday()): Promise<RecommendationContext> {
+  const sb = supabaseServer();
+  const base = await getTodayContext(now);
+
+  const [
+    { data: sessions, error: sessErr },
+    { data: exercises, error: exErr },
+    { data: bests, error: bestsErr },
+    { data: activeProfile, error: equipErr },
+    logged_today,
+    pinned,
+  ] = await Promise.all([
+    sb
+      .from("workout_sessions")
+      .select("date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight, muscle_groups))")
+      .order("date", { ascending: false })
+      .limit(10),
+    sb.from("exercises").select("*").order("name"),
+    sb.from("pr_bests").select("*"),
+    sb.from("equipment_profiles").select("name, items").eq("is_active", true).maybeSingle(),
+    getLoggedToday(base.today),
+    getPinnedRecommendation(base.today),
+  ]);
+  throwIf(sessErr);
+  throwIf(exErr);
+  throwIf(bestsErr);
+  throwIf(equipErr);
+
+  const { history, recencySessions } = shapeSessions((sessions ?? []) as unknown as SessionRow[]);
+  const muscle_recency = muscleGroupRecency(recencySessions, now);
+  const prBests = (bests ?? []) as PrBest[];
+  const allExercises = (exercises ?? []) as Exercise[];
 
   return {
     base,
-    muscle_recency: muscleGroupRecency(recencySessions, now),
-    program_days,
-    latest_session_id: latest?.id ?? null,
-    recommendation_mode,
+    muscle_recency,
+    recovery: recoveryRecommended(muscle_recency),
     history,
+    pr_bests: prBests,
+    next_targets: nextPrTargets(prBests, allExercises),
+    exercises: allExercises,
+    equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
+    logged_today,
+    pinned,
   };
+}
+
+export interface ChatContext extends TodayContext {
+  pr_bests: PrBest[];
+  next_targets: ReturnType<typeof nextPrTargets>;
+  exercises: Exercise[];
+  recent_sessions: HistorySession[];
+  muscle_recency: MuscleGroupRecency[];
+  recovery: RecoveryRecommendation;
+  equipment: ActiveEquipment | null;
+  /** The day's pinned recommendation, or null — its lifts drive the remaining count
+   *  and its headline/reason are injected as the advisory card suggestion. */
+  pinned: PinnedRecommendation | null;
+  logged_today: { exercise_id: string }[];
 }
 
 export async function getChatContext(now = appToday()): Promise<ChatContext> {
@@ -319,100 +245,40 @@ export async function getChatContext(now = appToday()): Promise<ChatContext> {
     { data: exercises, error: exErr },
     { data: sessions, error: sessErr },
     { data: activeProfile, error: equipErr },
-    { data: days, error: daysErr },
-    { data: latest, error: latestErr },
-    recommendation_mode,
+    logged_today,
+    pinned,
   ] = await Promise.all([
     sb.from("pr_bests").select("*"),
     sb.from("exercises").select("*"),
     sb
       .from("workout_sessions")
-      .select("id, date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight))")
+      .select("date, part, logged_sets(reps, weight, exercise:exercises(name, unit, is_bodyweight, muscle_groups))")
       .order("date", { ascending: false })
       .limit(10),
     sb.from("equipment_profiles").select("name, items").eq("is_active", true).maybeSingle(),
-    sb
-      .from("program_days")
-      .select("label, programs!inner(is_active), planned_exercises(exercise:exercises(muscle_groups))")
-      .eq("programs.is_active", true)
-      .order("day_number"),
-    sb.from("workout_sessions").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    getRecommendationMode(),
+    getLoggedToday(base.today),
+    getPinnedRecommendation(base.today),
   ]);
   throwIf(bestsErr);
   throwIf(exErr);
   throwIf(sessErr);
   throwIf(equipErr);
-  throwIf(daysErr);
-  throwIf(latestErr);
 
-  // The card the owner is looking at right now = the cache row for the CURRENT
-  // fingerprint (same key /api/recommendation reads — mode included, so a mode
-  // switch reads the card composed for that mode). Absent row → no card yet;
-  // chat just goes without it. Best-effort: a read failure must not break chat.
-  const fingerprint = recommendationFingerprint(base.today, latest?.id ?? null, recommendation_mode);
-  const { data: cachedCard } = await sb
-    .from("daily_recommendations")
-    .select("payload")
-    .eq("fingerprint", fingerprint)
-    .maybeSingle();
-  const cardPayload = (cachedCard?.payload ?? null) as { headline?: string; reason?: string } | null;
-  const card_suggestion =
-    cardPayload?.headline && cardPayload?.reason ? { headline: cardPayload.headline, reason: cardPayload.reason } : null;
-
-  type ChatDayRow = { label: string; planned_exercises: { exercise: { muscle_groups: string[] } | null }[] };
-  const program_days = ((days ?? []) as unknown as ChatDayRow[]).map((d) => ({
-    label: d.label,
-    // Union over the day's planned lifts (as-tagged; lib/facts rolls up to parents).
-    muscle_groups: [...new Set(d.planned_exercises.flatMap((p) => p.exercise?.muscle_groups ?? []))],
-  }));
-
-  type SessionRow = {
-    id: string;
-    date: string;
-    part: SessionPart;
-    logged_sets: {
-      reps: number;
-      weight: number | null;
-      exercise: { name: string; unit: string; is_bodyweight: boolean } | null;
-    }[];
-  };
-
-  const recent_sessions = ((sessions ?? []) as unknown as SessionRow[]).map((s) => ({
-    date: s.date,
-    part: s.part,
-    sets: s.logged_sets
-      .filter((ls) => ls.exercise !== null)
-      .map((ls) => ({
-        exercise_name: ls.exercise!.name,
-        reps: ls.reps,
-        weight: ls.weight,
-        unit: ls.exercise!.unit,
-        is_bodyweight: ls.exercise!.is_bodyweight,
-      })),
-  }));
-
+  const { history, recencySessions } = shapeSessions((sessions ?? []) as unknown as SessionRow[]);
+  const muscle_recency = muscleGroupRecency(recencySessions, now);
   const prBests = (bests ?? []) as PrBest[];
   const allExercises = (exercises ?? []) as Exercise[];
-
-  // Map canonical name -> muscle groups, then fold each recent session into the
-  // union of groups it trained. Overlap is computed here; the model never infers it.
-  const groupsByName = new Map(allExercises.map((e) => [e.name, e.muscle_groups]));
-  const recencySessions = recent_sessions.map((s) => ({
-    date: s.date,
-    muscle_groups: [...new Set(s.sets.flatMap((set) => groupsByName.get(set.exercise_name) ?? []))],
-  }));
 
   return {
     ...base,
     pr_bests: prBests,
     next_targets: nextPrTargets(prBests, allExercises),
     exercises: allExercises,
-    recent_sessions,
-    muscle_recency: muscleGroupRecency(recencySessions, now),
+    recent_sessions: history,
+    muscle_recency,
+    recovery: recoveryRecommended(muscle_recency),
     equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
-    program_days,
-    card_suggestion,
-    recommendation_mode,
+    pinned,
+    logged_today,
   };
 }
