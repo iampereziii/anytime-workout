@@ -2,23 +2,20 @@
 
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useChat } from "@/components/chat/ChatProvider";
 import { cn } from "@/lib/utils";
 
 /**
  * Chat UI — answers stream from /api/chat as plain text. Messages are
- * EPHEMERAL by design (v1 spec decision): client state only, last turns are
- * sent back as context, nothing persists.
+ * SESSION-SCOPED (see ChatProvider): held above the route so the conversation
+ * survives / ↔ /log navigation and reload, cleared on tab-close or New chat.
+ * Last turns are sent back as context; nothing touches the DB or server.
  */
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
 
 const MAX_HISTORY_TURNS = 8;
 
 export function Chat() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { messages, setMessages, clear } = useChat();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -67,6 +64,18 @@ export function Chat() {
 
   return (
     <section className="flex flex-1 flex-col gap-3">
+      {messages.length > 0 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={clear}
+            disabled={busy}
+            className="text-xs font-medium text-zinc-400 hover:text-zinc-600 disabled:opacity-40 dark:hover:text-zinc-200"
+          >
+            New chat
+          </button>
+        </div>
+      )}
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
         {messages.length === 0 && (
           <p className="mt-6 text-center text-sm text-zinc-400">
