@@ -58,6 +58,22 @@ export function appTodayIso(now: Date = new Date(), tz: string = appTimeZone()):
 }
 
 /**
+ * An instant as "yyyy-mm-dd HH:mm" on the owner's clock (workout-timing-sleep-state
+ * brief) — the rendering for the facts block's `Now:` and `Last workout:` lines.
+ * 24-hour clock, app timezone, minute precision.
+ */
+export function appClockTime(instant: Date = new Date(), tz: string = appTimeZone()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const value = (type: string) => parts.find((p) => p.type === type)!.value;
+  return `${appTodayIso(instant, tz)} ${value("hour")}:${value("minute")}`;
+}
+
+/**
  * Program day convention: 1 = Monday … 7 = Sunday.
  * Anchored by the seed baseline week (2026-06-29, a Monday, is Day 1).
  */

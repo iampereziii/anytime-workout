@@ -14,6 +14,7 @@
  * at the owner's request — flagged for a teach-mode revisit.
  */
 
+import { appTodayIso } from "@/lib/dates";
 import { PARENT_GROUPS, withParents } from "@/lib/muscle-groups";
 import type { Exercise, LoggedSet, PrBest, WorkoutSession } from "@/types/db";
 
@@ -40,6 +41,78 @@ export function daysSinceLastWorkout(
 /** Detraining mode: gap of 14+ days (business rule 6 / Flow 6). No history is NOT detraining. */
 export function isDetraining(daysSince: number | null): boolean {
   return daysSince !== null && daysSince >= 14;
+}
+
+/**
+ * Sleep-ambiguity ceiling (workout-timing-sleep-state brief, Risk #2): a gap that
+ * crosses midnight but is shorter than a typical waking block (~16-17h) may or may
+ * not contain sleep — the one recovery fact the app cannot compute. Gaps >= this
+ * that cross midnight almost certainly contain sleep; same-day gaps never fire.
+ * Tunable in one line; the truth-table test pins the boundary.
+ */
+export const SLEEP_AMBIGUITY_MAX_HOURS = 16;
+
+export interface LastWorkoutRecency {
+  /** ISO instant of the newest logged set (logged_sets.logged_at). */
+  last_logged_at: string;
+  /** The owning session's calendar date (yyyy-mm-dd). */
+  session_date: string;
+  /** Whole hours elapsed (floored, clamped >= 0) — computed here, never by the model. */
+  hours_since: number;
+  /**
+   * True when the session was logged live: its date equals the app-tz calendar date
+   * of its logged_at. logged_at records ENTRY time, not performance time, so hour
+   * granularity is only trustworthy for live logs — backdated entries must fall
+   * back to date-only recency (brief Risk #1).
+   */
+  live_logged: boolean;
+}
+
+/**
+ * Hour-granular last-workout recency (workout-timing-sleep-state brief). Given each
+ * recent session's newest set instant, return the overall newest with elapsed hours.
+ * Pure: instants and tz injected, no hidden clock. Null when no session carries a
+ * timestamp (no history, or rows predating logged_at capture).
+ */
+export function lastWorkoutRecency(
+  sessions: { date: string; last_logged_at: string | null }[],
+  now: Date,
+  tz: string,
+): LastWorkoutRecency | null {
+  let newest: { date: string; last_logged_at: string } | null = null;
+  for (const s of sessions) {
+    if (s.last_logged_at === null) continue;
+    // ISO-8601 instants from Postgres compare lexicographically within the same offset,
+    // but offsets can vary — compare as epoch millis to be safe.
+    if (!newest || Date.parse(s.last_logged_at) > Date.parse(newest.last_logged_at)) {
+      newest = { date: s.date, last_logged_at: s.last_logged_at };
+    }
+  }
+  if (!newest) return null;
+
+  const elapsedMs = now.getTime() - Date.parse(newest.last_logged_at);
+  return {
+    last_logged_at: newest.last_logged_at,
+    session_date: newest.date,
+    // Clamp: a future logged_at means clock skew / data drift, not negative recency.
+    hours_since: Math.max(0, Math.floor(elapsedMs / 3_600_000)),
+    live_logged: newest.date === appTodayIso(new Date(newest.last_logged_at), tz),
+  };
+}
+
+/**
+ * The deterministic gate on the one clarifying question (brief: "never assume").
+ * True only when the app-tz calendar day has rolled since the last workout AND the
+ * elapsed gap is under SLEEP_AMBIGUITY_MAX_HOURS — i.e. "new day" is on the record
+ * but sleep is genuinely unknowable. Backdated sessions never fire (their instant
+ * is entry time, not performance time); same-day gaps never fire (no day roll, no
+ * sleep assumption to get wrong). The model composes the question; code decides
+ * WHEN asking is warranted (ADR-0004: if it's computable, compute it).
+ */
+export function sleepStateAmbiguous(rec: LastWorkoutRecency | null, now: Date, tz: string): boolean {
+  if (!rec || !rec.live_logged) return false;
+  const dayRolled = appTodayIso(new Date(rec.last_logged_at), tz) !== appTodayIso(now, tz);
+  return dayRolled && rec.hours_since < SLEEP_AMBIGUITY_MAX_HOURS;
 }
 
 export interface MuscleGroupRecency {
