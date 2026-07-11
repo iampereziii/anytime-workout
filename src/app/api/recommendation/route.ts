@@ -115,6 +115,12 @@ export async function GET() {
 
         factsBlock = buildFactsBlock({
           today: base.today,
+          // Exact-time facts, accurate at compose time (the pin is immutable for the
+          // day — brief Risk #3: chat is the surface that can ask; the composer just
+          // gets told to be conservative when sleep state is unknown).
+          now: ctx.timing.now_clock,
+          last_workout: ctx.timing.last_workout,
+          sleep_state_ambiguous: ctx.timing.sleep_state_ambiguous,
           days_since_last_workout: base.days_since_last_workout,
           detraining: base.detraining,
           pr_bests: ctx.pr_bests.map((p) => ({

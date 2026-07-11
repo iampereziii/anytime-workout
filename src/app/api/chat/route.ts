@@ -65,6 +65,11 @@ export async function POST(req: Request) {
 
     const factsBlock = buildFactsBlock({
       today: ctx.today,
+      // Exact-time facts (workout-timing-sleep-state brief): hours are computed by
+      // lib/facts off logged_at; the ambiguity flag gates the one sleep question.
+      now: ctx.timing.now_clock,
+      last_workout: ctx.timing.last_workout,
+      sleep_state_ambiguous: ctx.timing.sleep_state_ambiguous,
       days_since_last_workout: ctx.days_since_last_workout,
       detraining: ctx.detraining,
       // Only surface remaining when there IS a composed workout to be remaining OF.

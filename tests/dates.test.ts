@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  appClockTime,
   appTimeZone,
   appToday,
   appTodayIso,
@@ -116,5 +117,21 @@ describe("appTimeZone (fail-fast on missing env — Risk #3)", () => {
   it("returns the configured zone when set", () => {
     process.env.APP_TIMEZONE = "Asia/Manila";
     expect(appTimeZone()).toBe("Asia/Manila");
+  });
+});
+
+describe("appClockTime (owner's-clock instant for the facts block — exact-time brief)", () => {
+  it("renders a UTC instant on the Manila clock, 24h, minute precision", () => {
+    // 22:12Z on 07-10 is 06:12 the NEXT day in Manila (UTC+8).
+    expect(appClockTime(new Date("2026-07-10T22:12:00Z"), "Asia/Manila")).toBe("2026-07-11 06:12");
+  });
+
+  it("midnight renders as 00:00 (h23 — never '24:00')", () => {
+    expect(appClockTime(new Date("2026-07-11T16:00:00Z"), "Asia/Manila")).toBe("2026-07-12 00:00");
+  });
+
+  it("agrees with appTodayIso on the calendar-day half", () => {
+    const instant = new Date("2026-07-10T22:12:00Z");
+    expect(appClockTime(instant, "Asia/Manila").slice(0, 10)).toBe(appTodayIso(instant, "Asia/Manila"));
   });
 });

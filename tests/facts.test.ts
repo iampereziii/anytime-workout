@@ -3,10 +3,13 @@ import {
   daysSinceLastWorkout,
   detectNewPrs,
   isDetraining,
+  lastWorkoutRecency,
   muscleGroupRecency,
   nextPrTargets,
   recoveryRecommended,
   remainingToday,
+  SLEEP_AMBIGUITY_MAX_HOURS,
+  sleepStateAmbiguous,
   type MuscleGroupRecency,
 } from "@/lib/facts";
 import type { Exercise, PrBest } from "@/types/db";
@@ -239,5 +242,108 @@ describe("detectNewPrs", () => {
     );
     expect(prs).toHaveLength(1);
     expect(prs[0]).toMatchObject({ rule_applied: "weight", weight: 22.5 });
+  });
+});
+
+// ---------- lastWorkoutRecency + sleepStateAmbiguous (workout-timing-sleep-state brief) ----------
+
+describe("lastWorkoutRecency (hour-granular recency — computed, never by the model)", () => {
+  const TZ = "Asia/Manila"; // UTC+8, no DST — the app's confirmed home zone
+
+  it("no sessions → null (first run)", () => {
+    expect(lastWorkoutRecency([], new Date("2026-07-11T21:40:00+08:00"), TZ)).toBeNull();
+  });
+
+  it("sessions without timestamps → null (rows predating logged_at capture)", () => {
+    const sessions = [{ date: "2026-07-10", last_logged_at: null }];
+    expect(lastWorkoutRecency(sessions, new Date("2026-07-11T21:40:00+08:00"), TZ)).toBeNull();
+  });
+
+  it("same-day gap: morning workout, evening question → hours, not '0 days' (AC #1)", () => {
+    const sessions = [{ date: "2026-07-11", last_logged_at: "2026-07-11T06:12:00+08:00" }];
+    const rec = lastWorkoutRecency(sessions, new Date("2026-07-11T21:40:00+08:00"), TZ);
+    expect(rec).toMatchObject({ hours_since: 15, live_logged: true, session_date: "2026-07-11" });
+  });
+
+  it("midnight-crossing short gap: 11:40 PM workout, 7 AM question → ~7h, live (AC #2 shape)", () => {
+    const sessions = [{ date: "2026-07-10", last_logged_at: "2026-07-10T23:40:00+08:00" }];
+    const rec = lastWorkoutRecency(sessions, new Date("2026-07-11T07:00:00+08:00"), TZ);
+    expect(rec).toMatchObject({ hours_since: 7, live_logged: true });
+  });
+
+  it("backdated entry → live_logged false: logged_at is ENTRY time, no hour claim (AC #4 / Risk #1)", () => {
+    // Yesterday's workout entered this morning: session date 07-10, entry instant 07-11.
+    const sessions = [{ date: "2026-07-10", last_logged_at: "2026-07-11T09:00:00+08:00" }];
+    const rec = lastWorkoutRecency(sessions, new Date("2026-07-11T10:00:00+08:00"), TZ);
+    expect(rec).toMatchObject({ live_logged: false });
+  });
+
+  it("live-log guard uses the APP timezone, not the raw instant's date part (tz brief invariant)", () => {
+    // 22:12Z on 07-10 IS 06:12 on 07-11 in Manila — a live morning log, not backdated.
+    const sessions = [{ date: "2026-07-11", last_logged_at: "2026-07-10T22:12:00Z" }];
+    const rec = lastWorkoutRecency(sessions, new Date("2026-07-11T10:00:00+08:00"), TZ);
+    expect(rec).toMatchObject({ live_logged: true, hours_since: 3 });
+  });
+
+  it("picks the newest instant across sessions (unsorted, mixed offsets)", () => {
+    const sessions = [
+      { date: "2026-07-09", last_logged_at: "2026-07-09T18:00:00+08:00" },
+      { date: "2026-07-11", last_logged_at: "2026-07-10T22:12:00Z" }, // = 07-11 06:12 Manila
+      { date: "2026-07-10", last_logged_at: null },
+    ];
+    const rec = lastWorkoutRecency(sessions, new Date("2026-07-11T12:12:00+08:00"), TZ);
+    expect(rec).toMatchObject({ session_date: "2026-07-11", hours_since: 6 });
+  });
+
+  it("future logged_at (clock skew / data drift) clamps to 0, never negative", () => {
+    const sessions = [{ date: "2026-07-11", last_logged_at: "2026-07-11T12:00:00+08:00" }];
+    const rec = lastWorkoutRecency(sessions, new Date("2026-07-11T11:00:00+08:00"), TZ);
+    expect(rec?.hours_since).toBe(0);
+  });
+});
+
+describe("sleepStateAmbiguous (the deterministic gate on the ONE sleep question)", () => {
+  const TZ = "Asia/Manila";
+  const at = (iso: string) => new Date(iso);
+  const rec = (date: string, loggedAt: string, now: string) =>
+    lastWorkoutRecency([{ date, last_logged_at: loggedAt }], at(now), TZ);
+
+  it("threshold constant is 16h (brief Risk #2 — tunable in one line, pinned here)", () => {
+    expect(SLEEP_AMBIGUITY_MAX_HOURS).toBe(16);
+  });
+
+  it("day rolled AND gap < 16h → ambiguous (the never-assume case)", () => {
+    const now = "2026-07-11T07:00:00+08:00";
+    const r = rec("2026-07-10", "2026-07-10T23:40:00+08:00", now);
+    expect(sleepStateAmbiguous(r, at(now), TZ)).toBe(true);
+  });
+
+  it("same-day gap never fires — no day roll, no sleep assumption to get wrong", () => {
+    const now = "2026-07-11T21:40:00+08:00"; // 15h later, same Manila day
+    const r = rec("2026-07-11", "2026-07-11T06:12:00+08:00", now);
+    expect(sleepStateAmbiguous(r, at(now), TZ)).toBe(false);
+  });
+
+  it("day rolled but gap >= 16h → not ambiguous (a waking block that long contains sleep)", () => {
+    const now = "2026-07-11T01:00:00+08:00"; // 19h after a 6 AM session
+    const r = rec("2026-07-10", "2026-07-10T06:00:00+08:00", now);
+    expect(sleepStateAmbiguous(r, at(now), TZ)).toBe(false);
+  });
+
+  it("exactly 16h → not ambiguous (boundary is exclusive)", () => {
+    const now = "2026-07-11T15:40:00+08:00";
+    const r = rec("2026-07-10", "2026-07-10T23:40:00+08:00", now);
+    expect(r?.hours_since).toBe(16);
+    expect(sleepStateAmbiguous(r, at(now), TZ)).toBe(false);
+  });
+
+  it("backdated session never fires — its instant is entry time (Risk #1)", () => {
+    const now = "2026-07-11T10:00:00+08:00";
+    const r = rec("2026-07-10", "2026-07-11T09:00:00+08:00", now); // live_logged false
+    expect(sleepStateAmbiguous(r, at(now), TZ)).toBe(false);
+  });
+
+  it("no recency (null) → false", () => {
+    expect(sleepStateAmbiguous(null, at("2026-07-11T10:00:00+08:00"), TZ)).toBe(false);
   });
 });

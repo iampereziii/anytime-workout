@@ -4,6 +4,8 @@ import {
   chatSystemPrompt,
   formatHistorySummary,
   parseSystemPrompt,
+  RECOMMENDATION_PROMPT_VERSION,
+  recommendationSystemPrompt,
   type FactsBlockInput,
 } from "@/lib/openai/prompts";
 
@@ -279,5 +281,66 @@ describe("system prompts", () => {
 
   it("parse prompt forbids normalizing names — resolution belongs to the dedup brain (rule 2)", () => {
     expect(parseSystemPrompt()).toContain("Do NOT normalize");
+  });
+});
+
+// ---------- exact-time recency & sleep-state (workout-timing-sleep-state brief) ----------
+
+describe("facts block — exact-time lines (AC #3)", () => {
+  it("renders Now and the computed hour-granular last-workout line", () => {
+    const block = buildFactsBlock({
+      ...base,
+      now: "2026-07-11 21:40",
+      last_workout: { at: "2026-07-11 06:12", hours_since: 15 },
+    });
+    expect(block).toContain("Now (owner's clock): 2026-07-11 21:40");
+    expect(block).toContain("Last workout: 2026-07-11 06:12 (~15h ago, computed)");
+  });
+
+  it("under an hour reads as 'less than an hour ago', never '~0h'", () => {
+    const block = buildFactsBlock({
+      ...base,
+      last_workout: { at: "2026-07-11 06:12", hours_since: 0 },
+    });
+    expect(block).toContain("(less than an hour ago, computed)");
+  });
+
+  it("renders the explicit sleep-unknown line ONLY when the computed flag is set — omission invites inference", () => {
+    const ambiguous = buildFactsBlock({ ...base, sleep_state_ambiguous: true });
+    expect(ambiguous).toContain("Slept since last workout: UNKNOWN");
+    expect(ambiguous).toContain("Never assume");
+    expect(buildFactsBlock(base)).not.toContain("Slept since last workout");
+  });
+
+  it("date-only fallback: no last_workout → no hour claim (AC #4 — backdated entries)", () => {
+    const block = buildFactsBlock({ ...base, last_workout: null });
+    expect(block).not.toContain("Last workout:");
+    expect(block).toContain("Days since last workout: 2"); // day facts still stand
+  });
+});
+
+describe("system prompts — never-assume sleep contract (AC #2)", () => {
+  it("chat: hours are ground truth and the model reasons in hours, not calendar days", () => {
+    const prompt = chatSystemPrompt(buildFactsBlock(base));
+    expect(prompt).toContain("elapsed hours");
+    expect(prompt).toContain("reason in hours, not calendar days");
+  });
+
+  it("chat: never assume sleep; exactly ONE clarifying question; the answer holds for the conversation", () => {
+    const prompt = chatSystemPrompt(buildFactsBlock(base));
+    expect(prompt).toContain("NEVER assume the owner has slept");
+    expect(prompt).toContain("ONE clarifying question");
+    expect(prompt).toContain("Have you slept since that workout?");
+    expect(prompt).toContain("do not ask again");
+  });
+
+  it("composer: cannot ask, so sleep-unknown means compose conservative (brief Risk #3)", () => {
+    const prompt = recommendationSystemPrompt(buildFactsBlock(base), ["Push-up"]);
+    expect(prompt).toContain("you cannot ask the owner");
+    expect(prompt).toContain("never a full session that assumes overnight recovery");
+  });
+
+  it("prompt version bumped for the sleep-aware composer regime (v6)", () => {
+    expect(RECOMMENDATION_PROMPT_VERSION).toBe(6);
   });
 });
