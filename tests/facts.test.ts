@@ -6,18 +6,17 @@ import {
   lastWorkoutRecency,
   muscleGroupRecency,
   nextPrTargets,
-  recoveryRecommended,
   remainingToday,
   SLEEP_AMBIGUITY_MAX_HOURS,
   sleepStateAmbiguous,
-  type MuscleGroupRecency,
 } from "@/lib/facts";
 import type { Exercise, PrBest } from "@/types/db";
 
 /**
  * GUIDE TESTS for the deterministic facts layer (ADR-0004, amended by ADR-0007).
- * The model now originates the workout; progression targets and the recovery gate
- * stay deterministic here. Run: npm test
+ * The model now originates the workout; progression targets stay deterministic here.
+ * Recovery is model judgment (ADR-0008) — no gate function lives here anymore.
+ * Run: npm test
  */
 
 // ---------- daysSinceLastWorkout ----------
@@ -151,34 +150,10 @@ describe("muscleGroupRecency", () => {
   });
 });
 
-// ---------- recoveryRecommended (re-homed 2026-07-07 guardrail, ADR-0007 finding 2) ----------
-
-describe("recoveryRecommended (hard gate — forces recovery only at full-body exhaustion)", () => {
-  const PARENTS = ["chest", "back", "shoulders", "biceps", "triceps", "core", "quads", "hamstrings", "glutes", "calves"];
-  const rec = (entries: [string, number][]): MuscleGroupRecency[] =>
-    entries.map(([muscle_group, days_since]) => ({ muscle_group, days_since, last_trained_on: "2026-07-06" }));
-
-  it("first run (no recency) → not forced", () => {
-    expect(recoveryRecommended([])).toEqual({ recommended: false, reason: null });
-  });
-
-  it("forces recovery when EVERY parent group was trained <=1 day ago", () => {
-    const r = recoveryRecommended(rec(PARENTS.map((g) => [g, g === "chest" ? 0 : 1])));
-    expect(r.recommended).toBe(true);
-    expect(r.reason).toBeTruthy();
-  });
-
-  it("does NOT force recovery when a parent group is recovered (2+ days) — that group is trainable", () => {
-    const r = recoveryRecommended(rec(PARENTS.map((g) => [g, g === "quads" ? 3 : 1])));
-    expect(r.recommended).toBe(false);
-  });
-
-  it("does NOT force recovery when a parent group is cold (never trained in window) — it's fresh", () => {
-    // Omit calves entirely: 9 parents trained yesterday, calves cold → train calves-ish.
-    const r = recoveryRecommended(rec(PARENTS.filter((g) => g !== "calves").map((g) => [g, 1])));
-    expect(r.recommended).toBe(false);
-  });
-});
+// Recovery gate retired 2026-07-13 (ADR-0008): `recoveryRecommended` deleted — recovery
+// is now the model's judgment over the muscle-recency facts, so there is no deterministic
+// gate function left to test. See prompts.test.ts (no gate lines) + recommendation.test.ts
+// (no short-circuit; the model may still originate is_recovery on its own).
 
 // ---------- nextPrTargets ----------
 

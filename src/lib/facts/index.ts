@@ -1,12 +1,12 @@
 /**
  * The deterministic facts layer — the trust core of the app (ADR-0004, amended by
  * ADR-0007). The model now ORIGINATES the workout (focus + lifts + sets + reps +
- * weight); the two safety-critical signals that stay deterministic live here and
- * are fed to the model as hard facts it composes around but cannot silently
- * override: progressive-overload targets (`nextPrTargets`, off pr_bests +
- * exercises) and the recovery-readiness gate (`recoveryRecommended`, off
- * session-derived muscle recency over PARENT_GROUPS). Neither needs the retired
- * program tables. Date math and remaining-count also stay here (never the model).
+ * weight); the safety-critical signal that stays deterministic lives here and is
+ * fed to the model as hard facts it composes around but cannot silently override:
+ * progressive-overload targets (`nextPrTargets`, off pr_bests + exercises). Date
+ * math and remaining-count also stay here (never the model). Recovery readiness is
+ * NO LONGER a deterministic gate — retired to model judgment per ADR-0008; the
+ * model reasons about rest from the computed muscle-recency facts below.
  *
  * Spec: tests/facts.test.ts (all green).
  *
@@ -15,7 +15,7 @@
  */
 
 import { appTodayIso } from "@/lib/dates";
-import { PARENT_GROUPS, withParents } from "@/lib/muscle-groups";
+import { withParents } from "@/lib/muscle-groups";
 import type { Exercise, LoggedSet, PrBest, WorkoutSession } from "@/types/db";
 
 /** Local-midnight Date from an ISO date string (yyyy-mm-dd) — date-only semantics. */
@@ -155,42 +155,6 @@ export function muscleGroupRecency(
       days_since: Math.round((todayMid.getTime() - atLocalMidnight(date).getTime()) / 86_400_000),
     }))
     .sort((a, b) => a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group));
-}
-
-export interface RecoveryRecommendation {
-  /** True → the app FORCES a recovery/rest recommendation (hard fact to the model). */
-  recommended: boolean;
-  /** Human-readable computed reason when forced; null otherwise. */
-  reason: string | null;
-}
-
-/**
- * Recovery-readiness gate (ADR-0007 finding 2) — the re-homed 2026-07-07 incident
- * guardrail. Originally coded against `program_days`' focus menu, its real input
- * was always session-derived muscle recency over PARENT_GROUPS; neither is dropped,
- * so it is re-homed here as a deterministic fact rather than handed to the model
- * whose judgment it exists to backstop.
- *
- * A parent group is "recovered enough to anchor a workout" when it was trained 2+
- * days ago OR never trained in the recency window (cold/fresh). Recovery is FORCED
- * only when NO parent group qualifies — i.e. every one of the 10 parents was
- * trained <=1 day ago. Strict and conservative by design: it fires only at true
- * full-body exhaustion (the incident shape), and never suppresses training while a
- * genuinely fresh muscle group exists. In softer cases the model still receives
- * full muscle recency and picks the fresh muscles itself.
- */
-export function recoveryRecommended(recency: MuscleGroupRecency[]): RecoveryRecommendation {
-  const daysByGroup = new Map(recency.map((r) => [r.muscle_group, r.days_since]));
-  const anyRecovered = PARENT_GROUPS.some((g) => {
-    const d = daysByGroup.get(g);
-    return d === undefined || d >= 2; // cold (never in window) or rested
-  });
-  if (anyRecovered) return { recommended: false, reason: null };
-  return {
-    recommended: true,
-    reason:
-      "every muscle group was trained within the last day — recommend rest or active recovery, never a training focus that overlaps recovering muscles",
-  };
 }
 
 export interface RemainingExercise {

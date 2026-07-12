@@ -21,8 +21,8 @@ export const dynamic = "force-dynamic";
  * ADR-0002: grounding is prompt-stuffed (facts + compact history), not tool-use.
  * ADR-0004 / rule 4: every number in the prompt comes from lib/facts; the system
  * prompt forbids the model from recomputing. ADR-0007: there is no stored program —
- * "remaining today" re-derives against the day's pinned recommendation, and the
- * recovery gate is a hard computed fact.
+ * "remaining today" re-derives against the day's pinned recommendation. ADR-0008:
+ * recovery is model judgment from the muscle-recency facts, not a hard computed gate.
  *
  * Answer format: streamed plain text, NOT JSON — streaming a JSON body would
  * forfeit the first-token latency target; /api/parse keeps the schema path.
@@ -90,7 +90,6 @@ export async function POST(req: Request) {
       })),
       history_summary: formatHistorySummary(ctx.recent_sessions),
       muscle_recency: ctx.muscle_recency.map((m) => ({ muscle_group: m.muscle_group, days_since: m.days_since })),
-      recovery_required: ctx.recovery.recommended ? { reason: ctx.recovery.reason ?? "" } : null,
       // The day's pinned recommendation is injected as the advisory card suggestion
       // so chat sees what the home screen says without being bound to it.
       card_suggestion: ctx.pinned ? { headline: ctx.pinned.payload.headline, reason: ctx.pinned.payload.reason } : null,

@@ -27,11 +27,10 @@ describe("recommendationSystemPrompt", () => {
     expect(recommendationSystemPrompt(facts, exercises)).toContain("Squat | Deadlift | Pull-up");
   });
 
-  it("carries the deterministic recovery gate as a HARD rule", () => {
+  it("carries NO deterministic recovery gate (ADR-0008 — recovery is model judgment)", () => {
     const p = recommendationSystemPrompt(facts, exercises);
-    expect(p).toContain("RECOVERY GATE (HARD)");
-    expect(p).toContain("RECOVERY REQUIRED");
-    expect(p).toContain("is_recovery = true");
+    expect(p).not.toContain("RECOVERY GATE (HARD)");
+    expect(p).not.toContain("RECOVERY REQUIRED");
   });
 
   it("treats the computed PR targets as the progression anchor", () => {

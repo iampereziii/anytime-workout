@@ -64,8 +64,8 @@ function toTodayView(base: TodayContext): TodayView {
 
 /**
  * GET /api/recommendation — the sole Today surface (ADR-0007). The AI generates the
- * full workout (focus + lifts + sets + reps + weight); progression targets and the
- * recovery-readiness gate stay deterministic and are fed as hard facts.
+ * full workout (focus + lifts + sets + reps + weight); progression targets stay
+ * deterministic and are fed as hard facts.
  *
  * Pinned per calendar day (finding 4): the recommendation is composed once on the
  * first load of the day and stored immutably (insert-if-absent, keyed by rec_date).
@@ -73,9 +73,9 @@ function toTodayView(base: TodayContext): TodayView {
  * re-derives against the fixed target from today's logged sets, so "N left" never
  * jumps mid-workout. A date rollover is a natural recompose.
  *
- * The recovery gate is enforced deterministically: when the computed facts require
- * recovery, the route returns a recovery day WITHOUT a model call — the guardrail is
- * never handed back to the model whose judgment it exists to backstop.
+ * Recovery is model judgment (ADR-0008): there is no deterministic gate. On a pin
+ * miss the model always composes and may return is_recovery = true on its own
+ * reading of the muscle-recency facts — the app no longer forces a recovery day.
  *
  * Graceful fallback (AC #5): ANY failure returns `{ recommendation: null }` with 200.
  * Failures are never pinned (only a real composition is).
@@ -93,72 +93,63 @@ export async function GET() {
     let factsBlock: string | null = null;
 
     if (!rec) {
-      if (ctx.recovery.recommended) {
-        // Hard recovery gate — decided deterministically, never by the model.
-        rec = {
-          focus: "Active Recovery",
-          headline: "Recovery First",
-          reason: ctx.recovery.reason ?? "Every muscle group was trained within the last day.",
-          is_recovery: true,
-          lifts: null,
-        };
-      } else {
-        const nameById = new Map(exercises.map((e) => [e.id, e.name]));
-        const catalog: FactsCatalogLine[] = exercises.map((e) => ({
-          name: e.name,
-          unit: e.unit,
-          is_bodyweight: e.is_bodyweight,
-          muscle_groups: e.muscle_groups,
-          default_rest_seconds: e.default_rest_seconds,
-          default_cue: e.default_cue,
-        }));
+      // ADR-0008: recovery is no longer a deterministic short-circuit. On a pin miss
+      // the model always composes; it may return is_recovery = true on its own
+      // judgment from the muscle-recency facts, but nothing here forces it.
+      const nameById = new Map(exercises.map((e) => [e.id, e.name]));
+      const catalog: FactsCatalogLine[] = exercises.map((e) => ({
+        name: e.name,
+        unit: e.unit,
+        is_bodyweight: e.is_bodyweight,
+        muscle_groups: e.muscle_groups,
+        default_rest_seconds: e.default_rest_seconds,
+        default_cue: e.default_cue,
+      }));
 
-        factsBlock = buildFactsBlock({
-          today: base.today,
-          // Exact-time facts, accurate at compose time (the pin is immutable for the
-          // day — brief Risk #3: chat is the surface that can ask; the composer just
-          // gets told to be conservative when sleep state is unknown).
-          now: ctx.timing.now_clock,
-          last_workout: ctx.timing.last_workout,
-          sleep_state_ambiguous: ctx.timing.sleep_state_ambiguous,
-          days_since_last_workout: base.days_since_last_workout,
-          detraining: base.detraining,
-          pr_bests: ctx.pr_bests.map((p) => ({
-            exercise_name: p.exercise_name,
-            is_bodyweight: p.is_bodyweight,
-            unit: p.unit,
-            best_reps: p.best_reps,
-            best_weight: p.best_weight,
-            achieved_on: p.achieved_on,
-          })),
-          next_pr_targets: ctx.next_targets.map((t) => ({
-            exercise_name: nameById.get(t.exercise_id) ?? "unknown",
-            target_reps: t.target_reps,
-            target_weight: t.target_weight,
-            rule_applied: t.rule_applied,
-          })),
-          history_summary: formatHistorySummary(ctx.history),
-          muscle_recency: ctx.muscle_recency.map((m) => ({ muscle_group: m.muscle_group, days_since: m.days_since })),
-          recovery_required: null, // handled deterministically above; never reached here
-          exercise_catalog: catalog,
-          equipment: ctx.equipment,
-        });
+      factsBlock = buildFactsBlock({
+        today: base.today,
+        // Exact-time facts, accurate at compose time (the pin is immutable for the
+        // day — brief Risk #3: chat is the surface that can ask; the composer just
+        // gets told to be conservative when sleep state is unknown).
+        now: ctx.timing.now_clock,
+        last_workout: ctx.timing.last_workout,
+        sleep_state_ambiguous: ctx.timing.sleep_state_ambiguous,
+        days_since_last_workout: base.days_since_last_workout,
+        detraining: base.detraining,
+        pr_bests: ctx.pr_bests.map((p) => ({
+          exercise_name: p.exercise_name,
+          is_bodyweight: p.is_bodyweight,
+          unit: p.unit,
+          best_reps: p.best_reps,
+          best_weight: p.best_weight,
+          achieved_on: p.achieved_on,
+        })),
+        next_pr_targets: ctx.next_targets.map((t) => ({
+          exercise_name: nameById.get(t.exercise_id) ?? "unknown",
+          target_reps: t.target_reps,
+          target_weight: t.target_weight,
+          rule_applied: t.rule_applied,
+        })),
+        history_summary: formatHistorySummary(ctx.history),
+        muscle_recency: ctx.muscle_recency.map((m) => ({ muscle_group: m.muscle_group, days_since: m.days_since })),
+        exercise_catalog: catalog,
+        equipment: ctx.equipment,
+      });
 
-        const allowed = exercises.map((e) => e.name);
-        if (allowed.length === 0) return ok({ recommendation: null });
-        const schema = todayRecommendationSchema(allowed as [string, ...string[]]);
-        const response = await openai().responses.parse(
-          {
-            model: RECOMMENDATION_COMPOSE_MODEL,
-            instructions: recommendationSystemPrompt(factsBlock, allowed),
-            input: "Recommend today's workout: pick the focus and compose the lifts.",
-            text: { format: zodTextFormat(schema, "today_recommendation") },
-          },
-          { timeout: MODEL_TIMEOUT_MS },
-        );
-        rec = response.output_parsed;
-        if (!rec) return ok({ recommendation: null }); // no parseable output → fallback
-      }
+      const allowed = exercises.map((e) => e.name);
+      if (allowed.length === 0) return ok({ recommendation: null });
+      const schema = todayRecommendationSchema(allowed as [string, ...string[]]);
+      const response = await openai().responses.parse(
+        {
+          model: RECOMMENDATION_COMPOSE_MODEL,
+          instructions: recommendationSystemPrompt(factsBlock, allowed),
+          input: "Recommend today's workout: pick the focus and compose the lifts.",
+          text: { format: zodTextFormat(schema, "today_recommendation") },
+        },
+        { timeout: MODEL_TIMEOUT_MS },
+      );
+      rec = response.output_parsed;
+      if (!rec) return ok({ recommendation: null }); // no parseable output → fallback
 
       // Pin the day's recommendation IMMUTABLY (insert-if-absent). A concurrent
       // first-load that already pinned is ignored — the first composition wins and

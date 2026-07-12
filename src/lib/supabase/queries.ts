@@ -7,10 +7,8 @@ import {
   lastWorkoutRecency,
   muscleGroupRecency,
   nextPrTargets,
-  recoveryRecommended,
   sleepStateAmbiguous,
   type MuscleGroupRecency,
-  type RecoveryRecommendation,
 } from "@/lib/facts";
 import type { HistorySession } from "@/lib/openai/prompts";
 import type { TodayRecommendation, TodayRecommendationLift } from "@/lib/openai/schemas";
@@ -199,7 +197,6 @@ async function getLoggedToday(today: string): Promise<{ exercise_id: string }[]>
 export interface RecommendationContext {
   base: TodayContext;
   muscle_recency: MuscleGroupRecency[];
-  recovery: RecoveryRecommendation;
   history: HistorySession[];
   pr_bests: PrBest[];
   next_targets: ReturnType<typeof nextPrTargets>;
@@ -216,9 +213,10 @@ export interface RecommendationContext {
 
 /**
  * Context for GET /api/recommendation (ADR-0007). Provides the raw materials the
- * composer needs (recency, history, PR targets, catalog, equipment) plus the
- * recovery gate, today's logged sets, and any already-pinned recommendation.
- * Everything numeric flows through lib/facts; this only fetches + shapes.
+ * composer needs (recency, history, PR targets, catalog, equipment), today's logged
+ * sets, and any already-pinned recommendation. Recovery is model judgment (ADR-0008),
+ * so no gate is computed here. Everything numeric flows through lib/facts; this only
+ * fetches + shapes.
  */
 export async function getRecommendationContext(
   now = appToday(),
@@ -261,7 +259,6 @@ export async function getRecommendationContext(
   return {
     base,
     muscle_recency,
-    recovery: recoveryRecommended(muscle_recency),
     history,
     pr_bests: prBests,
     next_targets: nextPrTargets(prBests, allExercises),
@@ -279,7 +276,6 @@ export interface ChatContext extends TodayContext {
   exercises: Exercise[];
   recent_sessions: HistorySession[];
   muscle_recency: MuscleGroupRecency[];
-  recovery: RecoveryRecommendation;
   equipment: ActiveEquipment | null;
   /** The day's pinned recommendation, or null — its lifts drive the remaining count
    *  and its headline/reason are injected as the advisory card suggestion. */
@@ -331,7 +327,6 @@ export async function getChatContext(now = appToday(), nowInstant: Date = new Da
     exercises: allExercises,
     recent_sessions: history,
     muscle_recency,
-    recovery: recoveryRecommended(muscle_recency),
     equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
     pinned,
     logged_today,
