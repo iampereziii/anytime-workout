@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet } from "@/lib/api-client";
+import { apiGet, apiPost } from "@/lib/api-client";
 
 /**
  * The Today card (ADR-0007) — one AI-generated recommendation surface. The card
@@ -11,8 +11,13 @@ import { apiGet } from "@/lib/api-client";
  * present and never blocks. If the composition is unavailable (loading, fallback),
  * a neutral header + recency shows — never a broken header (AC #5/#6).
  *
- * "N sets left" re-derives against the day's PINNED recommendation (finding 4), so
- * it counts down as sets are logged and never jumps mid-workout.
+ * The suggestion is STATIC (ADR-0009): it shows the day's targets and does not track
+ * progress against them. Logging a set changes history and PRs, never this card — so
+ * there is no "N sets left", no per-lift countdown, and no line-through. The card also
+ * carries no per-day state: there is no "done" marker, because the day ends on its own
+ * at rollover and chat reads "already trained" from the recency facts. One explicit
+ * action sits in the bottom row:
+ *  - "New recommendation" — one model call, re-rolls the day's pin.
  */
 
 interface TodayBase {
@@ -30,8 +35,6 @@ interface RecommendationLift {
   unit: string;
   rest_seconds: number | null;
   cue: string | null;
-  sets_done: number;
-  sets_remaining: number;
 }
 
 interface Recommendation {
@@ -40,7 +43,6 @@ interface Recommendation {
   reason: string;
   is_recovery: boolean;
   lifts: RecommendationLift[] | null;
-  remaining_count: number;
 }
 
 interface TodayResponse {
@@ -54,15 +56,35 @@ function liftLabel(l: RecommendationLift): string {
   return `${l.exercise_name} · ${l.target_sets}×${reps}${weight}`;
 }
 
+/** Secondary text-link style for the action row — matches the "Log →" affordance. */
+const actionClass =
+  "text-sm font-medium text-emerald-600 disabled:opacity-40 dark:text-emerald-400";
+
 export function TodayStatus() {
   const [data, setData] = useState<TodayResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     apiGet<TodayResponse>("/api/recommendation")
       .then(setData)
       .catch(() => setError("Couldn't load today's status — offline?"));
   }, []);
+
+  /** The re-roll needs connectivity and is one low-frequency tap, so a failure just
+   *  surfaces (brief Risk #2 — no offline queue; nothing is lost, retry works). */
+  async function newRecommendation() {
+    setBusy(true);
+    setActionError(null);
+    try {
+      setData(await apiPost<TodayResponse>("/api/recommendation/new", {}));
+    } catch {
+      setActionError("Couldn't get a new recommendation — offline?");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (error) return <p className="rounded-xl bg-zinc-100 p-3 text-sm text-zinc-500 dark:bg-zinc-900">{error}</p>;
   if (!data) return <p className="rounded-xl bg-zinc-100 p-3 text-sm text-zinc-400 dark:bg-zinc-900">Loading today…</p>;
@@ -108,31 +130,34 @@ export function TodayStatus() {
         <p className="mt-2 text-sm text-zinc-500">Recovery day — rest or active recovery (walk / mobility).</p>
       ) : rec?.lifts && rec.lifts.length > 0 ? (
         <>
-          <p className="mt-2 text-xs font-medium text-zinc-500">
-            {rec.focus}
-            {rec.remaining_count > 0 ? ` · ${rec.remaining_count} sets left` : " · complete ✓"}
-          </p>
+          <p className="mt-2 text-xs font-medium text-zinc-500">{rec.focus}</p>
           <ul className="mt-1 flex flex-wrap gap-1.5">
             {rec.lifts.map((l, i) => (
               <li
                 key={`${l.exercise_name}-${i}`}
-                className={
-                  l.sets_remaining === 0
-                    ? "rounded-full bg-zinc-100 px-2.5 py-1 text-xs text-zinc-400 line-through dark:bg-zinc-800"
-                    : "rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-700 dark:text-emerald-400"
-                }
+                className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-700 dark:text-emerald-400"
               >
                 {liftLabel(l)}
-                {l.sets_remaining > 0 ? ` — ${l.sets_remaining} left` : ""}
               </li>
             ))}
           </ul>
         </>
       ) : (
-        !rec && (
-          <p className="mt-2 text-sm text-zinc-500">Open the app to get today’s recommendation.</p>
-        )
+        !rec && <p className="mt-2 text-sm text-zinc-500">Open the app to get today’s recommendation.</p>
       )}
+
+      {/* The action row only appears once there's a suggestion on the card: a fallback
+          day has nothing to re-roll and recomposes on the next load anyway. Offered on
+          a recovery day too — it's the owner's escape hatch (brief Risk #4). */}
+      {rec && (
+        <div className="mt-3 flex items-center justify-end border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <button type="button" onClick={newRecommendation} disabled={busy} className={actionClass}>
+            {busy ? "Working…" : "New recommendation"}
+          </button>
+        </div>
+      )}
+
+      {actionError && <p className="mt-2 text-sm text-zinc-500">{actionError}</p>}
     </section>
   );
 }

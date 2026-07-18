@@ -1,13 +1,7 @@
 import { openai } from "@/lib/openai/client";
-import { remainingToday } from "@/lib/facts";
 import { RECOMMENDATION_MODEL } from "@/lib/openai/models";
-import {
-  buildFactsBlock,
-  chatSystemPrompt,
-  formatHistorySummary,
-  type FactsRemainingLine,
-} from "@/lib/openai/prompts";
-import { getChatContext, resolveLiftIds } from "@/lib/supabase/queries";
+import { buildFactsBlock, chatSystemPrompt, formatHistorySummary } from "@/lib/openai/prompts";
+import { getChatContext } from "@/lib/supabase/queries";
 import { ChatRequestSchema } from "@/lib/validators";
 import { fail, failFrom } from "@/lib/http";
 
@@ -20,9 +14,11 @@ export const dynamic = "force-dynamic";
  *
  * ADR-0002: grounding is prompt-stuffed (facts + compact history), not tool-use.
  * ADR-0004 / rule 4: every number in the prompt comes from lib/facts; the system
- * prompt forbids the model from recomputing. ADR-0007: there is no stored program —
- * "remaining today" re-derives against the day's pinned recommendation. ADR-0008:
- * recovery is model judgment from the muscle-recency facts, not a hard computed gate.
+ * prompt forbids the model from recomputing. ADR-0007: there is no stored program.
+ * ADR-0008: recovery is model judgment from the muscle-recency facts, not a hard
+ * computed gate. ADR-0009: the day's recommendation is a static suggestion — chat is
+ * told what it says and whether the owner has ended the day, but never how much of it
+ * is "left"; that derivation is retired.
  *
  * Answer format: streamed plain text, NOT JSON — streaming a JSON body would
  * forfeit the first-token latency target; /api/parse keeps the schema path.
@@ -39,30 +35,6 @@ export async function POST(req: Request) {
     const ctx = await getChatContext();
     const nameById = new Map(ctx.exercises.map((e) => [e.id, e.name]));
 
-    // "Remaining today" re-derives against the day's pinned recommendation
-    // (recommended sets − logged sets today), computed by lib/facts — never inferred.
-    const pinnedLifts = ctx.pinned?.payload.lifts ?? null;
-    const resolved = resolveLiftIds(pinnedLifts, ctx.exercises);
-    const target = resolved
-      .filter((l) => l.exercise_id !== null)
-      .map((l) => ({ exercise_id: l.exercise_id as string, target_sets: l.target_sets }));
-    const remaining = remainingToday(target, ctx.logged_today);
-    const liftById = new Map(resolved.filter((l) => l.exercise_id).map((l) => [l.exercise_id as string, l]));
-    const remainingLines: FactsRemainingLine[] = remaining.map((r) => {
-      const l = liftById.get(r.exercise_id)!;
-      return {
-        exercise_name: l.exercise_name,
-        unit: l.unit,
-        sets_remaining: r.setsRemaining,
-        sets_done: r.setsDone,
-        target_sets: r.target_sets,
-        target_reps: l.target_reps,
-        target_weight: l.target_weight,
-        rest_seconds: l.rest_seconds,
-        notes: l.cue,
-      };
-    });
-
     const factsBlock = buildFactsBlock({
       today: ctx.today,
       // Exact-time facts (workout-timing-sleep-state brief): hours are computed by
@@ -72,8 +44,6 @@ export async function POST(req: Request) {
       sleep_state_ambiguous: ctx.timing.sleep_state_ambiguous,
       days_since_last_workout: ctx.days_since_last_workout,
       detraining: ctx.detraining,
-      // Only surface remaining when there IS a composed workout to be remaining OF.
-      remaining: pinnedLifts ? remainingLines : undefined,
       pr_bests: ctx.pr_bests.map((p) => ({
         exercise_name: p.exercise_name,
         is_bodyweight: p.is_bodyweight,

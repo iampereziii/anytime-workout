@@ -6,7 +6,6 @@ import {
   lastWorkoutRecency,
   muscleGroupRecency,
   nextPrTargets,
-  remainingToday,
   SLEEP_AMBIGUITY_MAX_HOURS,
   sleepStateAmbiguous,
 } from "@/lib/facts";
@@ -15,7 +14,9 @@ import type { Exercise, PrBest } from "@/types/db";
 /**
  * GUIDE TESTS for the deterministic facts layer (ADR-0004, amended by ADR-0007).
  * The model now originates the workout; progression targets stay deterministic here.
- * Recovery is model judgment (ADR-0008) — no gate function lives here anymore.
+ * Recovery is model judgment (ADR-0008) — no gate function lives here anymore, and
+ * ADR-0009 retired `remainingToday` with the rest of the remaining-count layer (the
+ * recommendation is a static suggestion), so its cases are gone from this file too.
  * Run: npm test
  */
 
@@ -56,45 +57,12 @@ describe("isDetraining (business rule 6: gap ≥ 14 days)", () => {
     expect(isDetraining(null)).toBe(false));
 });
 
-// ---------- remainingToday (Flow 7 — vs the day's recommendation, ADR-0007) ----------
+// ---------- the retired remaining layer (ADR-0009) ----------
 
-describe("remainingToday (recommended sets − logged sets; split AM/PM)", () => {
-  const target = [
-    { exercise_id: "squat", target_sets: 4 },
-    { exercise_id: "rdl", target_sets: 4 },
-    { exercise_id: "lunge", target_sets: 3 },
-  ];
-
-  it("nothing logged → everything remaining, in recommendation order", () => {
-    const r = remainingToday(target, []);
-    expect(r.map((x) => x.exercise_id)).toEqual(["squat", "rdl", "lunge"]);
-    expect(r[0].setsRemaining).toBe(4);
-  });
-
-  it("partially done mid-day: squats fully logged AM, RDL half done → squat gone, rdl partial", () => {
-    const logged = [...Array(4).fill({ exercise_id: "squat" }), ...Array(2).fill({ exercise_id: "rdl" })];
-    const r = remainingToday(target, logged);
-    expect(r.map((x) => x.exercise_id)).toEqual(["rdl", "lunge"]);
-    expect(r[0].setsDone).toBe(2);
-    expect(r[0].setsRemaining).toBe(2);
-  });
-
-  it("ad-hoc exercise not in the recommendation (Flow 9) does not affect remaining", () => {
-    const logged = [{ exercise_id: "pushup" }, { exercise_id: "pushup" }];
-    expect(remainingToday(target, logged)).toHaveLength(3);
-  });
-
-  it("everything logged → empty", () => {
-    const logged = [
-      ...Array(4).fill({ exercise_id: "squat" }),
-      ...Array(4).fill({ exercise_id: "rdl" }),
-      ...Array(3).fill({ exercise_id: "lunge" }),
-    ];
-    expect(remainingToday(target, logged)).toEqual([]);
-  });
-
-  it("an empty recommendation (recovery day) → nothing remaining", () => {
-    expect(remainingToday([], [{ exercise_id: "squat" }])).toEqual([]);
+describe("remainingToday (retired — ADR-0009: the recommendation is a static suggestion)", () => {
+  it("no longer exists in the facts layer — logging never derives against the card", async () => {
+    const facts = await import("@/lib/facts");
+    expect("remainingToday" in facts).toBe(false);
   });
 });
 

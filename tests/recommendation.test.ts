@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { recommendationSystemPrompt } from "@/lib/openai/prompts";
-import { todayRecommendationSchema } from "@/lib/openai/schemas";
+import { todayRecommendationSchema, type TodayRecommendation } from "@/lib/openai/schemas";
+import { toPayload } from "@/lib/recommendation/payload";
 
 /**
- * AI-generated Today recommendation (ADR-0007). Covers the two pure pieces the
- * route composes:
- *  - the composer system prompt (originate the workout; recovery gate; catalog),
- *  - the schema (free-form focus + catalog-constrained lifts, or a recovery day).
- * The recommendation is pinned per calendar day by the route (finding 4).
+ * AI-generated Today recommendation (ADR-0007, amended by ADR-0009 — the
+ * recommendation is a static suggestion). Covers the pure pieces the routes build on:
+ *  - the composer system prompt (originate the workout; catalog constraint),
+ *  - the schema (free-form focus + catalog-constrained lifts, or a recovery day),
+ *  - the client payload contract shared by GET /api/recommendation and POST /new.
+ * The recommendation is pinned per calendar day, overwritten only by POST /new.
  */
 
 // ---------- recommendationSystemPrompt (originate the workout; ADR-0007) ----------
@@ -116,5 +118,50 @@ describe("todayRecommendationSchema", () => {
     });
     expect(parsed.lifts?.[0].target_reps).toBeNull();
     expect(parsed.lifts?.[0].target_weight).toBeNull();
+  });
+});
+
+// ---------- toPayload (the API contract — static suggestion + done, ADR-0009) ----------
+
+describe("toPayload (GET /api/recommendation and POST /new return this shape)", () => {
+  const rec: TodayRecommendation = {
+    focus: "Lower Body",
+    headline: "Suggested: Lower Body",
+    reason: "Legs are 5 days recovered.",
+    is_recovery: false,
+    lifts: [
+      { exercise_name: "Squat", target_sets: 4, target_reps: 8, target_weight: 20, unit: "reps", rest_seconds: 120, cue: null },
+    ],
+  };
+
+  it("carries the suggested targets verbatim from the pin", () => {
+    const p = toPayload(rec);
+    expect(p.focus).toBe("Lower Body");
+    expect(p.lifts).toEqual([
+      { exercise_name: "Squat", target_sets: 4, target_reps: 8, target_weight: 20, unit: "reps", rest_seconds: 120, cue: null },
+    ]);
+  });
+
+  it("has NO progress fields — the card can't count down what it isn't sent", () => {
+    const p = toPayload(rec);
+    expect(p).not.toHaveProperty("remaining_count");
+    expect(p.lifts?.[0]).not.toHaveProperty("sets_done");
+    expect(p.lifts?.[0]).not.toHaveProperty("sets_remaining");
+  });
+
+  it("has NO per-day state — no done marker (ADR-0009 amendment)", () => {
+    expect(toPayload(rec)).not.toHaveProperty("done");
+  });
+
+  it("is a pure projection of the pin — the same pin renders identically all day", () => {
+    // The ADR-0009 finish line: logging a set changes history and PRs, never this.
+    // The pin is the ONLY input, so there is nothing to drift.
+    expect(toPayload(rec)).toEqual(toPayload(rec));
+  });
+
+  it("a recovery day carries null lifts", () => {
+    const p = toPayload({ ...rec, is_recovery: true, lifts: null });
+    expect(p.is_recovery).toBe(true);
+    expect(p.lifts).toBeNull();
   });
 });

@@ -4,9 +4,13 @@
  * weight); the safety-critical signal that stays deterministic lives here and is
  * fed to the model as hard facts it composes around but cannot silently override:
  * progressive-overload targets (`nextPrTargets`, off pr_bests + exercises). Date
- * math and remaining-count also stay here (never the model). Recovery readiness is
- * NO LONGER a deterministic gate — retired to model judgment per ADR-0008; the
- * model reasons about rest from the computed muscle-recency facts below.
+ * math also stays here (never the model). Recovery readiness is NO LONGER a
+ * deterministic gate — retired to model judgment per ADR-0008; the model reasons
+ * about rest from the computed muscle-recency facts below.
+ *
+ * `remainingToday` was retired by ADR-0009: the recommendation is a static
+ * suggestion, so there is no "recommended sets − logged sets" derivation left to
+ * compute. Logging changes history and PRs; it never changes the card.
  *
  * Spec: tests/facts.test.ts (all green).
  *
@@ -155,43 +159,6 @@ export function muscleGroupRecency(
       days_since: Math.round((todayMid.getTime() - atLocalMidnight(date).getTime()) / 86_400_000),
     }))
     .sort((a, b) => a.days_since - b.days_since || a.muscle_group.localeCompare(b.muscle_group));
-}
-
-export interface RemainingExercise {
-  exercise_id: string;
-  target_sets: number;
-  setsDone: number;
-  setsRemaining: number;
-}
-
-/**
- * What's left of the day's recommended workout, across AM/PM mini-sessions (Flow 7,
- * amended by ADR-0007). "Remaining" re-derives against the DAY'S RECOMMENDATION
- * (recommended sets − logged sets) instead of a stored plan. The target is the
- * immutable per-day recommendation pinned by the recommendation route (finding 4),
- * so this count is stable across the day regardless of a shifting fingerprint. An
- * exercise is "remaining" while setsDone < target_sets; ad-hoc sets for exercises
- * not in the recommendation (Flow 9) are ignored. Input order is preserved.
- */
-export function remainingToday(
-  target: { exercise_id: string; target_sets: number }[],
-  loggedToday: Pick<LoggedSet, "exercise_id">[],
-): RemainingExercise[] {
-  const done = new Map<string, number>();
-  for (const set of loggedToday) {
-    done.set(set.exercise_id, (done.get(set.exercise_id) ?? 0) + 1);
-  }
-  return target
-    .map((t) => {
-      const setsDone = done.get(t.exercise_id) ?? 0;
-      return {
-        exercise_id: t.exercise_id,
-        target_sets: t.target_sets,
-        setsDone,
-        setsRemaining: Math.max(0, t.target_sets - setsDone),
-      };
-    })
-    .filter((r) => r.setsRemaining > 0);
 }
 
 export interface NewPr {

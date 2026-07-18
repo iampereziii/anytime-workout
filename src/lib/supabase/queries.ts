@@ -11,14 +11,18 @@ import {
   type MuscleGroupRecency,
 } from "@/lib/facts";
 import type { HistorySession } from "@/lib/openai/prompts";
-import type { TodayRecommendation, TodayRecommendationLift } from "@/lib/openai/schemas";
+import type { TodayRecommendation } from "@/lib/openai/schemas";
 import type { Exercise, PrBest, SessionPart } from "@/types/db";
 
 /**
  * Server-side data gathering shared by /api/recommendation and /api/chat.
  * Everything numeric flows through lib/facts (ADR-0004 / ADR-0007) — this module
  * only fetches rows and shapes them. There is no stored program: the day's
- * recommendation is AI-generated and pinned immutably per calendar day.
+ * recommendation is AI-generated and pinned per calendar day.
+ *
+ * ADR-0009: the recommendation is a static suggestion. Today's logged sets are no
+ * longer fetched here — nothing derives "remaining" from them anymore, and no
+ * per-day state hangs off the recommendation.
  */
 
 export interface TodayContext {
@@ -72,23 +76,8 @@ export interface ActiveEquipment {
   items: string[];
 }
 
-/** A pinned lift with its resolved catalog id (null = the name matched no exercise). */
-export interface ResolvedLift extends TodayRecommendationLift {
-  exercise_id: string | null;
-}
-
-/** Resolve each recommendation lift's exercise_name to its catalog id (exact match —
- *  the composer picks names verbatim from the catalog enum). */
-export function resolveLiftIds(
-  lifts: TodayRecommendationLift[] | null,
-  exercises: Pick<Exercise, "id" | "name">[],
-): ResolvedLift[] {
-  if (!lifts) return [];
-  const idByName = new Map(exercises.map((e) => [e.name, e.id]));
-  return lifts.map((l) => ({ ...l, exercise_id: idByName.get(l.exercise_name) ?? null }));
-}
-
-/** The day's pinned recommendation (ADR-0007 finding 4 — immutable per rec_date). */
+/** The day's pinned recommendation (ADR-0007 finding 4, relaxed by ADR-0009: one per
+ *  rec_date, fixed across reloads, overwritten only by "New recommendation"). */
 export interface PinnedRecommendation {
   payload: TodayRecommendation;
   prompt_version: number | null;
@@ -182,18 +171,6 @@ function shapeSessions(rows: SessionRow[]): {
   return { history, recencySessions, instantSessions };
 }
 
-/** Today's logged sets (exercise_id only) — for the remaining-vs-recommendation count. */
-async function getLoggedToday(today: string): Promise<{ exercise_id: string }[]> {
-  const sb = supabaseServer();
-  const { data: sessions, error: sessErr } = await sb.from("workout_sessions").select("id").eq("date", today);
-  throwIf(sessErr);
-  const ids = (sessions ?? []).map((s) => s.id);
-  if (ids.length === 0) return [];
-  const { data, error } = await sb.from("logged_sets").select("exercise_id").in("session_id", ids);
-  throwIf(error);
-  return data ?? [];
-}
-
 export interface RecommendationContext {
   base: TodayContext;
   muscle_recency: MuscleGroupRecency[];
@@ -203,8 +180,6 @@ export interface RecommendationContext {
   /** Full catalog — the allowed exercises the composer may program (with defaults). */
   exercises: Exercise[];
   equipment: ActiveEquipment | null;
-  /** Today's logged sets — subtracted from the pinned target for the remaining count. */
-  logged_today: { exercise_id: string }[];
   /** The day's already-pinned recommendation, or null if none composed yet. */
   pinned: PinnedRecommendation | null;
   /** Exact-time recency facts, accurate at compose time (workout-timing-sleep-state brief). */
@@ -213,10 +188,9 @@ export interface RecommendationContext {
 
 /**
  * Context for GET /api/recommendation (ADR-0007). Provides the raw materials the
- * composer needs (recency, history, PR targets, catalog, equipment), today's logged
- * sets, and any already-pinned recommendation. Recovery is model judgment (ADR-0008),
- * so no gate is computed here. Everything numeric flows through lib/facts; this only
- * fetches + shapes.
+ * composer needs (recency, history, PR targets, catalog, equipment) and any
+ * already-pinned recommendation. Recovery is model judgment (ADR-0008), so no gate is
+ * computed here. Everything numeric flows through lib/facts; this only fetches + shapes.
  */
 export async function getRecommendationContext(
   now = appToday(),
@@ -230,7 +204,6 @@ export async function getRecommendationContext(
     { data: exercises, error: exErr },
     { data: bests, error: bestsErr },
     { data: activeProfile, error: equipErr },
-    logged_today,
     pinned,
   ] = await Promise.all([
     sb
@@ -243,7 +216,6 @@ export async function getRecommendationContext(
     sb.from("exercises").select("*").order("name"),
     sb.from("pr_bests").select("*"),
     sb.from("equipment_profiles").select("name, items").eq("is_active", true).maybeSingle(),
-    getLoggedToday(base.today),
     getPinnedRecommendation(base.today),
   ]);
   throwIf(sessErr);
@@ -264,7 +236,6 @@ export async function getRecommendationContext(
     next_targets: nextPrTargets(prBests, allExercises),
     exercises: allExercises,
     equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
-    logged_today,
     pinned,
     timing: computeTiming(instantSessions, nowInstant),
   };
@@ -277,10 +248,9 @@ export interface ChatContext extends TodayContext {
   recent_sessions: HistorySession[];
   muscle_recency: MuscleGroupRecency[];
   equipment: ActiveEquipment | null;
-  /** The day's pinned recommendation, or null — its lifts drive the remaining count
-   *  and its headline/reason are injected as the advisory card suggestion. */
+  /** The day's pinned recommendation, or null — its headline/reason are injected as
+   *  the advisory card suggestion. */
   pinned: PinnedRecommendation | null;
-  logged_today: { exercise_id: string }[];
   /** Exact-time recency facts — chat is the hour-aware, question-capable surface. */
   timing: TimingFacts;
 }
@@ -294,7 +264,6 @@ export async function getChatContext(now = appToday(), nowInstant: Date = new Da
     { data: exercises, error: exErr },
     { data: sessions, error: sessErr },
     { data: activeProfile, error: equipErr },
-    logged_today,
     pinned,
   ] = await Promise.all([
     sb.from("pr_bests").select("*"),
@@ -307,7 +276,6 @@ export async function getChatContext(now = appToday(), nowInstant: Date = new Da
       .order("date", { ascending: false })
       .limit(10),
     sb.from("equipment_profiles").select("name, items").eq("is_active", true).maybeSingle(),
-    getLoggedToday(base.today),
     getPinnedRecommendation(base.today),
   ]);
   throwIf(bestsErr);
@@ -329,7 +297,6 @@ export async function getChatContext(now = appToday(), nowInstant: Date = new Da
     muscle_recency,
     equipment: activeProfile ? { name: activeProfile.name, items: activeProfile.items } : null,
     pinned,
-    logged_today,
     timing: computeTiming(instantSessions, nowInstant),
   };
 }
