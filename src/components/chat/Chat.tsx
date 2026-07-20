@@ -19,7 +19,7 @@ export function Chat() {
   const { messages, setMessages, clear } = useChat();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const { scrollRef, bottomRef, atBottom, hasNew, scrollToBottom, followIfPinned } =
+  const { bottomRef, atBottom, hasNew, scrollToBottom, followIfPinned } =
     useChatScroll(messages);
 
   function newChat() {
@@ -86,48 +86,46 @@ export function Chat() {
           </button>
         </div>
       )}
-      <div className="relative flex min-h-0 flex-1 flex-col">
-        <div ref={scrollRef} className="flex flex-1 flex-col gap-2 overflow-y-auto">
-          {messages.length === 0 && (
-            <p className="mt-6 text-center text-sm text-zinc-400">
-              Ask anything — “what’s left today?”, “I only have 20 minutes and dumbbells”, “ready for a PR attempt?”
-            </p>
-          )}
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={cn(
-                "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-                m.role === "user"
-                  ? "self-end bg-emerald-600 text-white"
-                  : "self-start bg-zinc-100 dark:bg-zinc-800",
-              )}
-            >
-              {m.content || (busy && i === messages.length - 1 ? "…" : "")}
-            </div>
-          ))}
-          <div ref={bottomRef} />
-        </div>
-        {/* Jump-to-bottom: shown only when scrolled up; expands to a "↓ new"
-            pill when a reply streamed in while away (feature brief Risk #2).
-            Bottom-right thumb zone, ≥44px, clears the sticky input + top-right
-            "New chat". */}
-        {messages.length > 0 && !atBottom && (
-          <button
-            type="button"
-            onClick={() => scrollToBottom("smooth")}
-            aria-label="Jump to latest message"
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
+        {messages.length === 0 && (
+          <p className="mt-6 text-center text-sm text-zinc-400">
+            Ask anything — “what’s left today?”, “I only have 20 minutes and dumbbells”, “ready for a PR attempt?”
+          </p>
+        )}
+        {messages.map((m, i) => (
+          <div
+            key={i}
             className={cn(
-              "absolute bottom-3 right-3 flex min-h-11 items-center justify-center rounded-full text-sm font-medium shadow-lg transition-colors",
-              hasNew
-                ? "min-w-11 gap-1 bg-emerald-600 px-4 text-white hover:bg-emerald-500"
-                : "min-w-11 bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white",
+              "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+              m.role === "user"
+                ? "self-end bg-emerald-600 text-white"
+                : "self-start bg-zinc-100 dark:bg-zinc-800",
             )}
           >
-            {hasNew ? "↓ new" : "↓"}
-          </button>
-        )}
+            {m.content || (busy && i === messages.length - 1 ? "…" : "")}
+          </div>
+        ))}
+        <div ref={bottomRef} />
       </div>
+      {/* Jump-to-bottom: fixed to the viewport (the page is the scroller), shown
+          only when scrolled up; expands to a "↓ new" pill when a reply streamed
+          in while away (feature brief Risk #2). Bottom-right thumb zone, ≥44px,
+          `bottom-8` clears the iPhone home indicator; z-20 keeps it above content. */}
+      {messages.length > 0 && !atBottom && (
+        <button
+          type="button"
+          onClick={() => scrollToBottom("smooth")}
+          aria-label="Jump to latest message"
+          className={cn(
+            "fixed bottom-8 right-4 z-20 flex min-h-11 min-w-11 items-center justify-center rounded-full text-sm font-medium shadow-lg transition-colors",
+            hasNew
+              ? "gap-1 bg-emerald-600 px-4 text-white hover:bg-emerald-500"
+              : "bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white",
+          )}
+        >
+          {hasNew ? "↓ new" : "↓"}
+        </button>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();
