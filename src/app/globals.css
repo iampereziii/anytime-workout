@@ -24,3 +24,17 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Entrance for the chat jump-to-bottom button (fade + rise). Applied via a
+   motion-safe arbitrary utility in Chat.tsx, so prefers-reduced-motion users
+   get no animation. No tailwindcss-animate plugin needed. */
+@keyframes chat-jump-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

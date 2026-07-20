@@ -24,6 +24,10 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // cover → the page draws under the notch/home indicator, which is what makes
+  // env(safe-area-inset-*) report nonzero. The chat jump-to-bottom button reads
+  // safe-area-inset-bottom for its offset; without this it would always see 0.
+  viewportFit: "cover",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },

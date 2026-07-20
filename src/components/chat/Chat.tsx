@@ -108,24 +108,47 @@ export function Chat() {
         <div ref={bottomRef} />
       </div>
       {/* Jump-to-bottom: fixed to the viewport (the page is the scroller), shown
-          only when scrolled up; expands to a "↓ new" pill when a reply streamed
-          in while away (feature brief Risk #2). Bottom-right thumb zone, ≥44px,
-          `bottom-8` clears the iPhone home indicator; z-20 keeps it above content. */}
+          only when scrolled up; expands to a "New reply" pill when a reply
+          streamed in while away (feature brief Risk #2). Bottom-right thumb zone,
+          ≥44px; offset uses safe-area-inset so it clears the home indicator /
+          nav bar across notch + notchless devices (needs viewportFit:cover, set
+          in layout.tsx). Idle = quiet elevated surface, emerald reserved for the
+          new-reply escalation. z-20 keeps it above content. */}
       {messages.length > 0 && !atBottom && (
         <button
           type="button"
           onClick={() => scrollToBottom("smooth")}
-          aria-label="Jump to latest message"
+          aria-label={hasNew ? "Jump to latest — new reply below" : "Jump to latest message"}
           className={cn(
-            "fixed bottom-8 right-4 z-20 flex min-h-11 min-w-11 items-center justify-center rounded-full text-sm font-medium shadow-lg transition-colors",
+            "fixed right-4 z-20 flex min-h-11 min-w-11 items-center justify-center rounded-full text-sm font-medium shadow-md ring-1 transition-colors",
+            "bottom-[calc(env(safe-area-inset-bottom,0px)+1.5rem)]",
+            "motion-safe:[animation:chat-jump-in_.2s_ease-out]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-900",
             hasNew
-              ? "gap-1 bg-emerald-600 px-4 text-white hover:bg-emerald-500"
-              : "bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white",
+              ? "gap-1.5 bg-emerald-600 px-4 text-white ring-emerald-600 hover:bg-emerald-500"
+              : "bg-white text-zinc-700 ring-zinc-200 hover:bg-zinc-50 dark:bg-zinc-800 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-700",
           )}
         >
-          {hasNew ? "↓ new" : "↓"}
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+            aria-hidden="true"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+          {hasNew && <span>New reply</span>}
         </button>
       )}
+      {/* SR-only mirror of the visual "new reply" pill — the pill alone gives
+          screen-reader users no signal a reply arrived. */}
+      <span aria-live="polite" className="sr-only">
+        {hasNew ? "New reply below" : ""}
+      </span>
       <form
         onSubmit={(e) => {
           e.preventDefault();
