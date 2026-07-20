@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useChat } from "@/components/chat/ChatProvider";
+import { clearChatScroll, useChatScroll } from "@/components/chat/useChatScroll";
 import { cn } from "@/lib/utils";
 
 /**
@@ -18,7 +19,13 @@ export function Chat() {
   const { messages, setMessages, clear } = useChat();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, bottomRef, atBottom, hasNew, scrollToBottom, followIfPinned } =
+    useChatScroll(messages);
+
+  function newChat() {
+    clearChatScroll();
+    clear();
+  }
 
   async function send() {
     const question = input.trim();
@@ -27,6 +34,9 @@ export function Chat() {
     setInput("");
     const history = messages.slice(-MAX_HISTORY_TURNS);
     setMessages((prev) => [...prev, { role: "user", content: question }, { role: "assistant", content: "" }]);
+    // The user's own send always jumps them down to see it — even if they'd
+    // scrolled up. rAF waits for the new messages to commit before scrolling.
+    requestAnimationFrame(() => scrollToBottom("smooth"));
 
     const appendToLast = (text: string) =>
       setMessages((prev) => {
@@ -52,13 +62,13 @@ export function Chat() {
         const { done, value } = await reader.read();
         if (done) break;
         appendToLast(decoder.decode(value, { stream: true }));
-        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        followIfPinned();
       }
     } catch {
       appendToLast("⚠ Network error — chat needs a connection (logging works offline).");
     } finally {
       setBusy(false);
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      followIfPinned();
     }
   }
 
@@ -68,7 +78,7 @@ export function Chat() {
         <div className="flex justify-end">
           <button
             type="button"
-            onClick={clear}
+            onClick={newChat}
             disabled={busy}
             className="text-xs font-medium text-zinc-400 hover:text-zinc-600 disabled:opacity-40 dark:hover:text-zinc-200"
           >
@@ -76,26 +86,47 @@ export function Chat() {
           </button>
         </div>
       )}
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
-        {messages.length === 0 && (
-          <p className="mt-6 text-center text-sm text-zinc-400">
-            Ask anything — “what’s left today?”, “I only have 20 minutes and dumbbells”, “ready for a PR attempt?”
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div
-            key={i}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={scrollRef} className="flex flex-1 flex-col gap-2 overflow-y-auto">
+          {messages.length === 0 && (
+            <p className="mt-6 text-center text-sm text-zinc-400">
+              Ask anything — “what’s left today?”, “I only have 20 minutes and dumbbells”, “ready for a PR attempt?”
+            </p>
+          )}
+          {messages.map((m, i) => (
+            <div
+              key={i}
+              className={cn(
+                "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+                m.role === "user"
+                  ? "self-end bg-emerald-600 text-white"
+                  : "self-start bg-zinc-100 dark:bg-zinc-800",
+              )}
+            >
+              {m.content || (busy && i === messages.length - 1 ? "…" : "")}
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+        {/* Jump-to-bottom: shown only when scrolled up; expands to a "↓ new"
+            pill when a reply streamed in while away (feature brief Risk #2).
+            Bottom-right thumb zone, ≥44px, clears the sticky input + top-right
+            "New chat". */}
+        {messages.length > 0 && !atBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom("smooth")}
+            aria-label="Jump to latest message"
             className={cn(
-              "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-              m.role === "user"
-                ? "self-end bg-emerald-600 text-white"
-                : "self-start bg-zinc-100 dark:bg-zinc-800",
+              "absolute bottom-3 right-3 flex min-h-11 items-center justify-center rounded-full text-sm font-medium shadow-lg transition-colors",
+              hasNew
+                ? "min-w-11 gap-1 bg-emerald-600 px-4 text-white hover:bg-emerald-500"
+                : "min-w-11 bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white",
             )}
           >
-            {m.content || (busy && i === messages.length - 1 ? "…" : "")}
-          </div>
-        ))}
-        <div ref={bottomRef} />
+            {hasNew ? "↓ new" : "↓"}
+          </button>
+        )}
       </div>
       <form
         onSubmit={(e) => {
