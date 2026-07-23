@@ -33,4 +33,17 @@ describe("ParsedLogSchema (rule 5 shapes)", () => {
     });
     expect(parsed.entries[0].reps).toEqual([12, 12, 11, 10]);
   });
+
+  it("accepts per-set weight arrays for pyramid entries, decimals included (ADR-0011)", () => {
+    const parsed = ParsedLogSchema.parse({
+      entries: [
+        { raw_name: "incline press", sets: 3, reps: [12, 10, 8], weight_lbs: [17.5, 20, 25] },
+        { raw_name: "dips", sets: 3, reps: 10, weight_lbs: 10 }, // uniform stays a single number
+      ],
+      clarification_needed: false,
+      clarification_question: null,
+    });
+    expect(parsed.entries[0].weight_lbs).toEqual([17.5, 20, 25]);
+    expect(parsed.entries[1].weight_lbs).toBe(10);
+  });
 });

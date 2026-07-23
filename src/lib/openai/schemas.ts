@@ -28,8 +28,10 @@ export const ParsedExerciseSchema = z.object({
   sets: z.number().int().positive(),
   /** Reps per set. Single value when uniform; per-set array when the user gave "12/12/11/10". */
   reps: z.union([z.number().int().positive(), z.array(z.number().int().positive())]),
-  /** ADDED lbs for bodyweight movements; absolute lbs otherwise. Null = bodyweight/unknown. */
-  weight_lbs: z.number().nullable(),
+  /** ADDED lbs for bodyweight movements; absolute lbs otherwise. Null = bodyweight/unknown.
+   *  Single value when one load covers every set; per-set array (positionally paired
+   *  with reps) for pyramid-style entries — same union idiom as `reps` (ADR-0011). */
+  weight_lbs: z.union([z.number(), z.array(z.number())]).nullable(),
 });
 
 export const ParsedLogSchema = z.object({

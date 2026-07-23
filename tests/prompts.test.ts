@@ -256,6 +256,19 @@ describe("system prompts", () => {
   it("parse prompt forbids normalizing names — resolution belongs to the dedup brain (rule 2)", () => {
     expect(parseSystemPrompt()).toContain("Do NOT normalize");
   });
+
+  it("parse prompt teaches the parallel-list pyramid notation with positional pairing (ADR-0011)", () => {
+    const prompt = parseSystemPrompt();
+    expect(prompt).toContain('"3 sets 12, 10, 8. 17.5lbs 20lbs 25lbs"');
+    expect(prompt).toContain("weight_lbs [17.5, 20, 25]");
+    expect(prompt).toContain("Decimal weights are normal");
+  });
+
+  it("parse prompt keeps uniform-weight examples and forbids gratuitous weight arrays (regression guard)", () => {
+    const prompt = parseSystemPrompt();
+    expect(prompt).toContain('"3x12" style means sets x reps');
+    expect(prompt).toContain("Never return a weight_lbs array when one load covers all sets");
+  });
 });
 
 // ---------- exact-time recency & sleep-state (workout-timing-sleep-state brief) ----------

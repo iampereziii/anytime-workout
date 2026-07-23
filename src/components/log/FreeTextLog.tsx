@@ -8,6 +8,7 @@ import { suggestMuscleGroups } from "@/lib/exercises/suggest-tags";
 import type { ParsedLog } from "@/lib/openai/schemas";
 import { Button } from "@/components/ui/button";
 import { CreateFields, defaultCreateOpts, type CreateOpts } from "./CreateFields";
+import { formatProposalSummary, toPerSetWeights } from "./format";
 import type { Exercise } from "@/types/db";
 import type { PendingEntry } from "./types";
 
@@ -24,7 +25,8 @@ import type { PendingEntry } from "./types";
 interface ProposalRow {
   raw_name: string;
   reps: number[];
-  weight: number | null;
+  /** Per-set loads, positionally paired with `reps` (pyramid brief / ADR-0011). */
+  weights: (number | null)[];
   candidates: ExerciseMatch[];
   /** exercise id, or "__create__" for create-new. */
   chosen: string;
@@ -101,10 +103,13 @@ export function FreeTextLog({
           candidates = [];
         }
         const strong = didYouMean(candidates);
+        const reps = Array.isArray(entry.reps)
+          ? entry.reps
+          : Array.from({ length: entry.sets }, () => entry.reps as number);
         rows.push({
           raw_name: entry.raw_name,
-          reps: Array.isArray(entry.reps) ? entry.reps : Array.from({ length: entry.sets }, () => entry.reps as number),
-          weight: entry.weight_lbs,
+          reps,
+          weights: toPerSetWeights(entry.weight_lbs, reps.length),
           candidates,
           chosen: strong.length > 0 ? strong[0].id : "__create__",
           create_opts: defaultCreateOpts,
@@ -146,7 +151,7 @@ export function FreeTextLog({
           key: `${exercise.id}-${Date.now()}-${entries.length}`,
           exercise,
           reps: row.reps,
-          weight: row.weight,
+          weight: row.weights,
         });
       }
       onAdd(entries);
@@ -187,10 +192,7 @@ export function FreeTextLog({
             <div key={i} className="rounded-xl border border-zinc-300 p-3 dark:border-zinc-700">
               <div className="mb-2 flex items-baseline justify-between">
                 <span className="font-medium">“{row.raw_name}”</span>
-                <span className="text-sm text-zinc-500">
-                  {row.reps.length} × {row.reps.join("/")}
-                  {row.weight != null ? ` @ ${row.weight} lbs` : ""}
-                </span>
+                <span className="text-sm text-zinc-500">{formatProposalSummary(row.reps, row.weights)}</span>
               </div>
               <select
                 value={row.chosen}

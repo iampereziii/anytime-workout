@@ -8,6 +8,7 @@ import { cacheExercises, enqueueLogWrite, flushQueue, getCachedExercises, getQue
 import type { LogRequest } from "@/lib/validators";
 import { Button } from "@/components/ui/button";
 import { ExerciseCombobox } from "@/components/log/ExerciseCombobox";
+import { formatEntrySummary, unitLabel } from "@/components/log/format";
 import { FreeTextLog } from "@/components/log/FreeTextLog";
 import type { CreateOpts } from "@/components/log/CreateFields";
 import type { PendingEntry } from "@/components/log/types";
@@ -31,8 +32,6 @@ interface QuickEntry {
   reps: number;
   weight: number | null;
 }
-
-const unitLabel = { reps: "reps", seconds: "sec", minutes: "min" } as const;
 
 export default function LogPage() {
   const [exercises, setExercises] = useState<Exercise[]>([]);
@@ -116,7 +115,8 @@ export default function LogPage() {
         key: `${quick.exercise.id}-${Date.now()}`,
         exercise: quick.exercise,
         reps: Array.from({ length: quick.sets }, () => quick.reps),
-        weight: quick.weight,
+        // Quick-add stays uniform-weight (ADR-0011) — one value repeated per set.
+        weight: Array.from({ length: quick.sets }, () => quick.weight),
       },
     ]);
     setQuick(null);
@@ -141,7 +141,7 @@ export default function LogPage() {
           exercise_id: entry.exercise.id,
           set_number: i + 1,
           reps: r,
-          weight: entry.weight,
+          weight: entry.weight[i] ?? null,
         })),
       ),
     };
@@ -339,8 +339,7 @@ export default function LogPage() {
               <div>
                 <span className="font-medium">{entry.exercise.name}</span>{" "}
                 <span className="text-sm text-zinc-500">
-                  {entry.reps.length} × {entry.reps.join("/")} {unitLabel[entry.exercise.unit]}
-                  {entry.weight != null ? ` @ ${entry.exercise.is_bodyweight ? "BW +" : ""}${entry.weight} lbs` : ""}
+                  {formatEntrySummary(entry.reps, entry.weight, entry.exercise.unit, entry.exercise.is_bodyweight)}
                 </span>
               </div>
               <button
