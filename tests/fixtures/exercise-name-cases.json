@@ -1,0 +1,21 @@
+[
+  { "input": "benchPress", "expected": "Bench Press" },
+  { "input": "BenchPress", "expected": "Bench Press" },
+  { "input": "BENCH  press", "expected": "Bench Press" },
+  { "input": "  bench press  ", "expected": "Bench Press" },
+  { "input": "Diamond- Push-up", "expected": "Diamond Push-up" },
+  { "input": "diamond push-up", "expected": "Diamond Push-up" },
+  { "input": "push-UP", "expected": "Push-up" },
+  { "input": "chin-up", "expected": "Chin-up" },
+  { "input": "-lunge", "expected": "Lunge" },
+  { "input": "db shoulder press", "expected": "DB Shoulder Press" },
+  { "input": "rdl", "expected": "RDL" },
+  { "input": "ohp", "expected": "OHP" },
+  { "input": "bw dips", "expected": "BW Dips" },
+  { "input": "ATG split squat", "expected": "ATG Split Squat" },
+  { "input": "Walk / Mobility", "expected": "Walk / Mobility" },
+  { "input": "Barbell Row", "expected": "Barbell Row" },
+  { "input": "Incline Push-up", "expected": "Incline Push-up" },
+  { "input": "Hanging Leg Raise", "expected": "Hanging Leg Raise" },
+  { "input": "kettlebellHalo", "expected": "Kettlebell Halo" }
+]
